@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>番剧智能助手</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 头部 -->
+        <header class="header">
+            <h1>🎬 番剧智能助手</h1>
+            <span class="status" id="apiStatus">API 状态: 检测中...</span>
+        </header>
+        
+        <!-- 对话区域 -->
+        <div class="chat-container">
+            <div class="messages" id="messages">
+                <div class="message bot">
+                    <div class="avatar">🤖</div>
+                    <div class="content">你好！我是番剧智能助手。有什么番剧想了解的吗？你可以点击下方的快捷按钮直接查询，也可以输入你想问的问题～</div>
+                </div>
+            </div>
+            
+            <!-- 快捷操作 -->
+            <div class="quick-actions">
+                <button class="action-btn" data-query="2026年3月最新番剧有哪些？">
+                    🔍 最新番剧
+                </button>
+                <button class="action-btn" data-query="有什么热门番剧推荐？">
+                    🔥 热门排行
+                </button>
+                <button class="action-btn" data-query="评分最高的番剧有哪些？">
+                    ⭐ 评分最高
+                </button>
+                <button class="action-btn" data-query="推荐好看的日漫">
+                    🎌 日漫
+                </button>
+                <button class="action-btn" data-query="推荐国漫">
+                    🇨🇳 国漫
+                </button>
+                <button class="action-btn" data-query="有什么剧场版推荐？">
+                    🎬 剧场版
+                </button>
+            </div>
+            
+            <!-- 输入区域 -->
+            <div class="input-area">
+                <input type="text" id="userInput" placeholder="输入你想了解的番剧..." autocomplete="off">
+                <button id="sendBtn">发送</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>

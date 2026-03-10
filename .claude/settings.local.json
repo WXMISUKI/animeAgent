@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(conda run:*)",
+      "Bash(conda create:*)",
+      "Bash(conda env list)"
+    ]
+  }
+}
