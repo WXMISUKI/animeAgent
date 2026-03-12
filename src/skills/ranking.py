@@ -2,22 +2,26 @@
 """排行榜 Skill"""
 
 from .base import BaseSkill, SkillInput, SkillOutput
-from ..data_sources.bangumi import BangumiAPI
-from ..data_sources.bilibili import BilibiliAPI
+from ..data_sources.jikan import JikanAPI
+from ..data_sources.anilist import AniListAPI
 from ..data_sources.router import DataSourceRouter
 from ..models.query_params import QueryParams
 
 
 class RankingSkill(BaseSkill):
-    """排行榜 Skill"""
+    """排行榜 Skill
+    
+    使用 Jikan API (MyAnimeList) + AniList API 获取数据
+    """
     
     name = "rank"
     description = "获取排行榜"
     
     def __init__(self):
+        # 使用 Jikan + AniList 数据源
         self.data_sources = [
-            BangumiAPI(),
-            BilibiliAPI()
+            JikanAPI(),    # Jikan API - MyAnimeList 数据
+            AniListAPI()  # AniList API - 全球数据
         ]
         self.router = DataSourceRouter(self.data_sources)
     

@@ -1,230 +1,259 @@
-"""LangChain Tools 定义 - 将 Skills 封装为 LLM 可调用的工具"""
+# agent/tools.py
+"""LangChain Tools 定义 - 让 LLM 自主调用 Skills"""
 
-from typing import TypeVar, Any
-from langchain_core.tools import BaseTool
-from pydantic import BaseModel, Field
 import json
 import asyncio
-import concurrent.futures
+from typing import Any
+from langchain_core.tools import BaseTool
+from pydantic import Field
+from ..skills.query import AnimeQuerySkill
+from ..skills.detail import AnimeDetailSkill
+from ..skills.ranking import RankingSkill
 
 
-class QueryAnimeInput(BaseModel):
-    """番剧查询输入参数"""
-    time_range: str = Field(default="", description="时间范围（如'2026-03'、'本周'、'最新'）")
-    platform: str = Field(default="all", description="平台（bilibili/iqiyi/tencent/all）")
-    anime_type: str = Field(default="all", description="类型（日漫/国漫/美漫/剧场版/all）")
-    sort_by: str = Field(default="latest", description="排序（latest/hot/rating）")
-    keyword: str = Field(default="", description="关键词（番剧名称或标签）")
+class QueryAnimeInput(BaseTool):
+    """query_anime 工具的参数 schema"""
+    time_range: str = Field(default="", description="时间范围，如 '2026-02'、'2024年7月'、'本月'、'最新'、'2024夏'")
+    platform: str = Field(default="all", description="平台，如 'jikan'、'bangumi'、'all'（默认 all）")
+    anime_type: str = Field(default="all", description="类型，如 '日漫'、'国漫'、'all'")
+    sort_by: str = Field(default="latest", description="排序方式，如 'latest'（最新）、'hot'（热门）、'rating'（评分）")
+    keyword: str = Field(default="", description="关键词搜索，如番剧名称 '違国日記'、'葬送的芙莉莲' 等")
 
 
-class GetAnimeDetailInput(BaseModel):
-    """番剧详情输入参数"""
-    anime_id: str = Field(description="番剧 ID（可以从查询结果中获取）")
-
-
-class GetRankingInput(BaseModel):
-    """排行榜输入参数"""
-    time_range: str = Field(default="本周", description="时间范围（本周/月/本季/本年）")
-    platform: str = Field(default="all", description="平台（bilibili/iqiyi/tencent/all）")
-    anime_type: str = Field(default="all", description="类型（日漫/国漫/美漫/all）")
-    sort_by: str = Field(default="rating", description="排序方式（rating/hot）")
-    limit: int = Field(default=10, description="返回数量限制")
-
-
-def run_async(coro):
-    """安全地运行异步代码"""
+def _run_skill_sync(skill_instance, params: dict) -> str:
+    """同步执行 Skill（包装异步为同步）"""
     try:
-        loop = asyncio.get_running_loop()
-        # 已有事件循环，在新线程中执行
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            future = pool.submit(asyncio.run, coro)
-            return future.result()
-    except RuntimeError:
-        # 没有运行中的事件循环
-        return asyncio.run(coro)
+        # 获取事件循环
+        try:
+            loop = asyncio.get_running_loop()
+            # 已有事件循环，在新线程中执行
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(asyncio.run, skill_instance.execute({
+                    "query_params": params,
+                    "context": {}
+                }))
+                result = future.result()
+        except RuntimeError:
+            # 没有运行中的事件循环
+            result = asyncio.run(skill_instance.execute({
+                "query_params": params,
+                "context": {}
+            }))
+
+        if result.get("success"):
+            return json.dumps(result.get("data", []), ensure_ascii=False, indent=2)
+        else:
+            return f"查询失败: {result.get('error', '未知错误')}"
+    except Exception as e:
+        return f"执行错误: {str(e)}"
 
 
 class QueryAnimeTool(BaseTool):
     """番剧查询工具"""
-    name = "query_anime"
-    description = """查询番剧信息列表。当用户想了解番剧列表、最新番剧、特定类型的番剧时使用。
+
+    name: str = "query_anime"
+    description: str = """查询番剧列表。当用户想了解番剧列表、搜索番剧、了解某个类型/时间段的番剧时使用。
     
-    可以根据以下条件筛选：
-    - 时间范围：最新、本周、本月、特定月份（如2026-03）
-    - 平台：B站（bilibili）、爱奇艺（iqiyi）、腾讯（tencent）、全部（all）
-    - 类型：日漫、国漫、美漫、剧场版、全部（all）
-    - 排序方式：最新（latest）、热门（hot）、评分（rating）
-    - 关键词：番剧名称或标签"""
-    
-    args_schema: Type[BaseModel] = QueryAnimeInput
-    
-    def _run(self, time_range: str = "", platform: str = "all", 
-             anime_type: str = "all", sort_by: str = "latest", 
-             keyword: str = "") -> str:
-        """同步执行查询"""
-        from ..skills.query import AnimeQuerySkill
-        
-        try:
-            skill = AnimeQuerySkill()
-            params = {
-                "time_range": time_range,
-                "platform": platform,
-                "anime_type": anime_type,
-                "sort_by": sort_by,
-                "keyword": keyword
-            }
-            
-            result = run_async(skill.execute({
-                "query_params": params,
-                "context": {}
-            }))
-            
-            if result.get("success"):
-                data = result.get("data", [])
-                return self._format_result(data)
-            else:
-                return f"查询失败: {result.get('error')}"
-                
-        except Exception as e:
-            return f"执行错误: {str(e)}"
-    
-    def _format_result(self, data: list) -> str:
-        """格式化查询结果"""
-        if not data:
-            return "未找到符合条件的番剧"
-        
-        result_lines = [f"找到 {len(data)} 部番剧：\n"]
-        
-        for i, anime in enumerate(data[:10], 1):
-            name = anime.get("名称") or anime.get("name_cn") or anime.get("name", "未知")
-            rating = anime.get("rating") or anime.get("评分", "暂无")
-            platform = anime.get("platform") or anime.get("平台", "未知")
-            air_date = anime.get("air_date") or anime.get("播出时间", "未知")
-            
-            result_lines.append(
-                f"{i}. {name} ★{rating}\n"
-                f"   播出: {air_date} | 平台: {platform}"
-            )
-        
-        return "\n\n".join(result_lines)
+可以回答以下问题：
+- "有什么番剧推荐？"
+- "2026年2月有什么新番？"
+- "最近有哪些日漫？"
+- "推荐几部热血类型的番剧"
+- "《違国日記》讲了什么？" - 使用 keyword 参数搜索具体番剧
+
+**重要**：当用户询问特定番剧的详情时（如"《xxx》讲了什么"），应优先使用 keyword 参数搜索！
+
+参数：
+- time_range: 时间范围（可选），如 "2026-02"、"2024年7月"、"2024夏"、"本月"、"最新"
+- platform: 平台（可选），如 "jikan"（MyAnimeList）、"bangumi"、"all"（默认 all）
+- anime_type: 类型（可选），如 "日漫"、"国漫"、"all"（默认 all）
+- sort_by: 排序（可选），如 "latest"（最新）、"hot"（热门）、"rating"（评分，默认 rating）
+- keyword: 关键词（可选），如番剧名称 "違国日記"、"葬送的芙莉莲"、"Spy x Family" """
+
+    args_schema: type[BaseTool] = QueryAnimeInput
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._skill = AnimeQuerySkill()
+
+    def _run(self, time_range: str = "", platform: str = "all", anime_type: str = "all", sort_by: str = "latest", keyword: str = "") -> str:
+        params = {
+            "time_range": time_range if time_range else None,
+            "platform": platform,
+            "anime_type": anime_type,
+            "sort_by": sort_by,
+            "keyword": keyword if keyword else None
+        }
+        return _run_skill_sync(self._skill, params)
+
+    async def _arun(self, time_range: str = "", platform: str = "all", anime_type: str = "all", sort_by: str = "latest", keyword: str = "") -> str:
+        params = {
+            "time_range": time_range if time_range else None,
+            "platform": platform,
+            "anime_type": anime_type,
+            "sort_by": sort_by,
+            "keyword": keyword if keyword else None
+        }
+        result = await self._skill.execute({"query_params": params, "context": {}})
+        if result.get("success"):
+            return json.dumps(result.get("data", []), ensure_ascii=False, indent=2)
+        else:
+            return f"查询失败: {result.get('error', '未知错误')}"
+
+
+class GetAnimeDetailInput(BaseTool):
+    """get_anime_detail 工具的参数 schema"""
+    anime_id: str = Field(default="", description="番剧ID，如 '12345'")
 
 
 class GetAnimeDetailTool(BaseTool):
     """番剧详情查询工具"""
-    name = "get_anime_detail"
-    description = """获取特定番剧的详细信息。当用户询问某个具体番剧的详细信息、剧情介绍、评分、制作公司等时使用。
-    
-    输入参数：
-    - anime_id: 番剧 ID（可以从查询结果中获取）"""
-    
-    args_schema: Type[BaseModel] = GetAnimeDetailInput
-    
-    def _run(self, anime_id: str) -> str:
-        """同步执行详情查询"""
-        from ..skills.detail import AnimeDetailSkill
-        
-        try:
-            skill = AnimeDetailSkill()
-            
-            result = run_async(skill.execute({
-                "query_params": {"anime_id": anime_id},
-                "context": {}
-            }))
-            
-            if result.get("success"):
-                data = result.get("data")
-                if data:
-                    return self._format_detail(data[0] if isinstance(data, list) else data)
-                return "未找到该番剧详情"
-            else:
-                return f"查询失败: {result.get('error')}"
-                
-        except Exception as e:
-            return f"执行错误: {str(e)}"
-    
-    def _format_detail(self, anime: dict) -> str:
-        """格式化详情结果"""
-        name = anime.get("名称") or anime.get("name_cn") or anime.get("name", "未知")
-        rating = anime.get("rating") or anime.get("评分", "暂无")
-        summary = anime.get("summary") or anime.get("简介", "暂无简介")
-        platform = anime.get("platform") or anime.get("平台", "未知")
-        air_date = anime.get("air_date") or anime.get("播出时间", "未知")
-        tags = anime.get("tags") or anime.get("标签", [])
-        
-        lines = [
-            f"【{name}】",
-            f"⭐ 评分: {rating}",
-            f"📅 播出: {air_date}",
-            f"📺 平台: {platform}",
-            f"📖 简介: {summary}"
-        ]
-        
-        if tags:
-            lines.append(f"🏷️ 标签: {', '.join(tags)}")
-        
-        return "\n".join(lines)
+
+    name: str = "get_anime_detail"
+    description: str = """获取特定番剧的详细信息。当用户询问某个具体番剧的详细信息、剧情介绍、评分、演员等时使用。
+
+可以回答以下问题：
+- "《葬送的芙莉莲》怎么样？"
+- "这部番剧的剧情是什么？"
+- "间谍过家人的评分是多少？"
+- "帮我查一下这部动漫的详细信息"
+
+参数：
+- anime_id: 番剧ID（必填），可以从查询结果中获取，或者用户提供番剧名称时需要先查询获取ID"""
+
+    args_schema: type[BaseTool] = GetAnimeDetailInput
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._skill = AnimeDetailSkill()
+
+    def _run(self, anime_id: str = "") -> str:
+        params = {"anime_id": anime_id}
+        return _run_skill_sync(self._skill, params)
+
+    async def _arun(self, anime_id: str = "") -> str:
+        params = {"anime_id": anime_id}
+        result = await self._skill.execute({"query_params": params, "context": {}})
+        if result.get("success"):
+            return json.dumps(result.get("data"), ensure_ascii=False, indent=2)
+        else:
+            return f"查询失败: {result.get('error', '未知错误')}"
 
 
-class GetRankingTool(BaseTool):
+class GetAnimeRankingInput(BaseTool):
+    """get_anime_ranking 工具的参数 schema"""
+    time_range: str = Field(default="", description="时间范围，如 '本月'、'2026年'")
+    platform: str = Field(default="all", description="平台，如 'bilibili'、'all'")
+    anime_type: str = Field(default="all", description="类型，如 '日漫'、'国漫'、'all'")
+    sort_by: str = Field(default="rating", description="排序方式，如 'rating'、'hot'")
+
+
+class GetAnimeRankingTool(BaseTool):
     """番剧排行榜工具"""
-    name = "get_anime_ranking"
-    description = """获取番剧排行榜。当用户想了解热门番剧、评分最高的番剧、最受好评的番剧排行时使用。
+
+    name: str = "get_anime_ranking"
+    description: str = """获取番剧排行榜。当用户想了解热门番剧、评分最高的番剧、最受好评的番剧时使用。
+
+可以回答以下问题：
+- "有什么番剧排行榜？"
+- "评分最高的番剧有哪些？"
+- "最近最火的番剧是什么？"
+- "推荐TOP10番剧"
+
+参数：
+- time_range: 时间范围（可选），如 "本月"、"2026年"
+- platform: 平台（可选），如 "bilibili"、"all"（默认 all）
+- anime_type: 类型（可选），如 "日漫"、"国漫"、"all"（默认 all）
+- sort_by: 排序方式（可选），如 "rating"（评分）、"hot"（热度），默认 rating"""
+
+    args_schema: type[BaseTool] = GetAnimeRankingInput
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._skill = RankingSkill()
+
+    def _run(self, time_range: str = "", platform: str = "all", anime_type: str = "all", sort_by: str = "rating") -> str:
+        params = {
+            "time_range": time_range if time_range else None,
+            "platform": platform,
+            "anime_type": anime_type,
+            "sort_by": sort_by
+        }
+        return _run_skill_sync(self._skill, params)
+
+    async def _arun(self, time_range: str = "", platform: str = "all", anime_type: str = "all", sort_by: str = "rating") -> str:
+        params = {
+            "time_range": time_range if time_range else None,
+            "platform": platform,
+            "anime_type": anime_type,
+            "sort_by": sort_by
+        }
+        result = await self._skill.execute({"query_params": params, "context": {}})
+        if result.get("success"):
+            return json.dumps(result.get("data", []), ensure_ascii=False, indent=2)
+        else:
+            return f"查询失败: {result.get('error', '未知错误')}"
+
+
+class WebSearchInput(BaseTool):
+    """web_search 工具的参数 schema"""
+    query: str = Field(default="", description="搜索查询，如 '違国日記 剧情介绍'、'2024年7月新番推荐'")
+    max_results: int = Field(default=10, description="最大结果数，默认10")
+
+
+class WebSearchTool(BaseTool):
+    """通用网页搜索工具
     
-    输入参数：
-    - time_range: 时间范围（本周/月/本季/本年）
-    - platform: 平台（bilibili/iqiyi/tencent/all）
-    - anime_type: 类型（日漫/国漫/美漫/all）
-    - sort_by: 排序方式（rating 评分排行 / hot 热门排行）
-    - limit: 返回数量（默认10）"""
+    当番剧数据库无法找到结果时，使用此工具进行通用搜索。
+    """
+
+    name: str = "web_search"
+    description: str = """通用网页搜索工具。当用户询问的信息在番剧数据库中找不到时，使用此工具搜索互联网。
     
-    args_schema: Type[BaseModel] = GetRankingInput
-    
-    def _run(self, time_range: str = "本周", platform: str = "all",
-             anime_type: str = "all", sort_by: str = "rating",
-             limit: int = 10) -> str:
-        """同步执行排行榜查询"""
-        from ..skills.ranking import RankingSkill
-        
+**重要**：这是最后的 fallback 手段！
+- 首先应尝试使用 query_anime 工具查询数据库
+- 只有当数据库查询失败或结果不满意时，才使用此工具
+
+可以回答以下问题：
+- "《違国日記》这部番剧讲了什么故事？"
+- "《葬送的芙莉莲》剧情简介"
+- "2024年7月有哪些热门新番"
+
+参数：
+- query: 搜索关键词，建议包含番剧名称和"剧情"、"介绍"等关键词
+- max_results: 最大结果数，默认10"""
+
+    args_schema: type[BaseTool] = WebSearchInput
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        from ..data_sources.baidu_search import BaiduSearchAPI
+        self._search_api = BaiduSearchAPI()
+
+    def _run(self, query: str = "", max_results: int = 10) -> str:
+        """同步搜索"""
         try:
-            skill = RankingSkill()
-            params = {
-                "time_range": time_range,
-                "platform": platform,
-                "anime_type": anime_type,
-                "sort_by": sort_by,
-                "limit": limit
-            }
+            # 在新线程中运行异步函数
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(asyncio.run, self._search_api._search_web(query, max_results))
+                results = future.result()
             
-            result = run_async(skill.execute({
-                "query_params": params,
-                "context": {}
-            }))
-            
-            if result.get("success"):
-                data = result.get("data", [])
-                return self._format_ranking(data, sort_by)
-            else:
-                return f"查询失败: {result.get('error')}"
-                
+            # 解析结果
+            parsed = self._search_api._parse_search_results(results, query)
+            return json.dumps([a.to_dict() for a in parsed], ensure_ascii=False, indent=2)
         except Exception as e:
-            return f"执行错误: {str(e)}"
-    
-    def _format_ranking(self, data: list, sort_by: str) -> str:
-        """格式化排行榜结果"""
-        if not data:
-            return "暂无排行榜数据"
-        
-        title = "评分排行" if sort_by == "rating" else "热门排行"
-        result_lines = [f"🏆 番剧{title} TOP{len(data)}：\n"]
-        
-        for i, anime in enumerate(data, 1):
-            name = anime.get("名称") or anime.get("name_cn") or anime.get("name", "未知")
-            rating = anime.get("rating") or anime.get("评分", "暂无")
-            
-            medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-            result_lines.append(f"{medal} {name} ★{rating}")
-        
-        return "\n".join(result_lines)
+            return f"搜索失败: {str(e)}"
+
+    async def _arun(self, query: str = "", max_results: int = 10) -> str:
+        """异步搜索"""
+        try:
+            results = await self._search_api._search_web(query, max_results)
+            parsed = self._search_api._parse_search_results(results, query)
+            return json.dumps([a.to_dict() for a in parsed], ensure_ascii=False, indent=2)
+        except Exception as e:
+            return f"搜索失败: {str(e)}"
 
 
 def create_tools() -> list[BaseTool]:
@@ -232,14 +261,6 @@ def create_tools() -> list[BaseTool]:
     return [
         QueryAnimeTool(),
         GetAnimeDetailTool(),
-        GetRankingTool()
+        GetAnimeRankingTool(),
+        WebSearchTool()
     ]
-
-
-def get_tool_by_name(name: str) -> BaseTool | None:
-    """根据名称获取工具"""
-    tools = create_tools()
-    for tool in tools:
-        if tool.name == name:
-            return tool
-    return None

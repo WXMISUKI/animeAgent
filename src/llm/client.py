@@ -6,12 +6,19 @@ import json
 import re
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
-from .prompts import INTENT_PROMPT, FORMAT_PROMPT
+from .prompts import (
+    INTENT_PROMPT,
+    FORMAT_PROMPT,
+    INTENT_CLASSIFY_PROMPT,
+    SYSTEM_PROMPT,
+    DIRECT_RESPONSE_TEMPLATES,
+    INTENT_KEYWORDS
+)
 
 
 class MiniMaxClient:
     """MiniMax 模型客户端"""
-    
+
     def __init__(self):
         self.client = ChatOpenAI(
             model=os.getenv("ORCH_MODEL", "MiniMax/MiniMax-M2.5"),
@@ -20,7 +27,7 @@ class MiniMaxClient:
             base_url=os.getenv("ORCH_API_BASE"),
             api_key=os.getenv("ORCH_API_KEY")
         )
-        
+
         # 意图解析专用客户端（更低温度）
         self.intent_client = ChatOpenAI(
             model=os.getenv("ORCH_MODEL"),
@@ -29,6 +36,76 @@ class MiniMaxClient:
             base_url=os.getenv("ORCH_API_BASE"),
             api_key=os.getenv("ORCH_API_KEY")
         )
+
+    def classify_intent(self, query: str) -> dict:
+        """意图分类 - 先用关键词快速匹配，失败则调用 LLM"""
+
+        query_lower = query.lower()
+
+        # 快速关键词匹配
+        for intent_type, keywords in INTENT_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword in query_lower:
+                    # 匹配成功，返回分类结果
+                    if intent_type in ["greeting", "identity", "capability", "thanks"]:
+                        return {
+                            "intent_type": intent_type,
+                            "needs_fetch": False,
+                            "response_mode": "direct",
+                            "params": {}
+                        }
+                    elif intent_type in ["detail", "ranking"]:
+                        return {
+                            "intent_type": intent_type,
+                            "needs_fetch": True,
+                            "response_mode": "skill",
+                            "params": {}
+                        }
+
+        # 关键词匹配失败，调用 LLM 进行智能判断
+        messages = [
+            SystemMessage(content=INTENT_CLASSIFY_PROMPT),
+            HumanMessage(content=f"用户查询：{query}")
+        ]
+
+        response = self.intent_client.invoke(messages)
+        result = self._parse_json_response(response.content)
+
+        # 提取意图类型和响应模式
+        intent_type = result.get("intent_type", "chat")
+        needs_fetch = result.get("needs_fetch", False)
+        response_mode = result.get("response_mode", "direct" if not needs_fetch else "skill")
+
+        return {
+            "intent_type": intent_type,
+            "needs_fetch": needs_fetch,
+            "response_mode": response_mode,
+            "params": result.get("params", {})
+        }
+
+    def get_direct_response(self, intent_type: str) -> str:
+        """获取直接回复内容"""
+        return DIRECT_RESPONSE_TEMPLATES.get(intent_type, "你好！有什么可以帮你的吗？")
+
+    def chat_with_system(self, query: str, context: list = None) -> str:
+        """使用系统提示词进行对话"""
+        messages = [SystemMessage(content=SYSTEM_PROMPT)]
+
+        # 添加历史上下文
+        if context:
+            recent = context[-6:] if len(context) > 6 else context
+            for msg in recent:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role == "system":
+                    messages.append(SystemMessage(content=content))
+                else:
+                    messages.append(HumanMessage(content=content))
+
+        messages.append(HumanMessage(content=query))
+
+        response = self.client.invoke(messages)
+        return response.content
     
     def parse_intent(self, query: str, context: list = None) -> dict:
         """解析用户意图"""

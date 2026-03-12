@@ -51,6 +51,7 @@ CACHE_TTL=3600
 #### 终端1：启动后端 API
 
 ```bash
+conda activate langgraph-env
 cd D:\AI\AIcode\minimaxtest
 uvicorn src.main:app --reload
 ```

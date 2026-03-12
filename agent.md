@@ -835,6 +835,12 @@ class AnimeInfo:
 
 ## 八、环境配置与安装
 
+> ⚠️ **重要提示**：本项目使用 conda 环境，请先激活环境后再执行任何 Python 命令！
+> 
+> ```bash
+> conda activate langgraph-env
+> ```
+
 ### 8.1 环境要求
 
 - Python 3.10+

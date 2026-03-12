@@ -2,22 +2,26 @@
 """番剧查询 Skill"""
 
 from .base import BaseSkill, SkillInput, SkillOutput
-from ..data_sources.bangumi import BangumiAPI
-from ..data_sources.bilibili import BilibiliAPI
+from ..data_sources.jikan import JikanAPI
+from ..data_sources.anilist import AniListAPI
 from ..data_sources.router import DataSourceRouter
 from ..models.query_params import QueryParams
 
 
 class AnimeQuerySkill(BaseSkill):
-    """番剧查询 Skill"""
+    """番剧查询 Skill
+    
+    使用 Jikan API (MyAnimeList) + AniList API 获取数据
+    """
     
     name = "query"
     description = "查询番剧列表"
     
     def __init__(self):
+        # 使用 Jikan + AniList 数据源
         self.data_sources = [
-            BangumiAPI(),
-            BilibiliAPI()
+            JikanAPI(),    # Jikan API - MyAnimeList 数据
+            AniListAPI()  # AniList API - 全球数据
         ]
         self.router = DataSourceRouter(self.data_sources)
     

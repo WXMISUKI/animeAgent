@@ -1,0 +1,19 @@
+(base) PS D:\AI\AIcode\minimaxtest\frontend> python -m http.server 8080
+Serving HTTP on :: port 8080 (http://[::]:8080/) ...
+::1 - - [11/Mar/2026 09:20:09] "GET / HTTP/1.1" 304 -
+::1 - - [11/Mar/2026 09:20:09] "GET /styles.css HTTP/1.1" 304 -
+::1 - - [11/Mar/2026 09:20:09] "GET /app.js HTTP/1.1" 304 -
+::1 - - [11/Mar/2026 09:20:09] code 404, message File not found
+::1 - - [11/Mar/2026 09:20:09] "GET /favicon.ico HTTP/1.1" 404 -
+::1 - - [11/Mar/2026 09:20:20] code 404, message File not found
+::1 - - [11/Mar/2026 09:20:20] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 - 
+::1 - - [11/Mar/2026 09:26:43] code 404, message File not found
+::1 - - [11/Mar/2026 09:26:43] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 - 
+
+Keyboard interrupt received, exiting.
+(base) PS D:\AI\AIcode\minimaxtest\frontend> python -m http.server 8080
+Serving HTTP on :: port 8080 (http://[::]:8080/) ...
+::1 - - [11/Mar/2026 09:53:31] "GET / HTTP/1.1" 304 -
+::1 - - [11/Mar/2026 09:53:31] code 404, message File not found
+::1 - - [11/Mar/2026 09:53:31] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 -
+
