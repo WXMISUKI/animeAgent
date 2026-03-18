@@ -1,5 +1,25 @@
 # 番剧信息获取智能体 - Agent 实现文档
 
+## 项目概要
+
+| 项目 | 说明 |
+|------|------|
+| **项目名称** | 番剧智能助手 (Anime Agent) |
+| **核心框架** | ReAct 模式 + LangChain Tools |
+| **LLM 提供商** | MiniMax (通过阿里云 DashScope) |
+| **数据源** | Jikan API + AniList API + 百度搜索 (Fallback) |
+| **部署方式** | FastAPI + SSE 流式输出 |
+
+### 功能特性
+
+- ✅ 支持关键词搜索番剧
+- ✅ 支持时间范围查询 (如 "2024年7月")
+- ✅ 多数据源并行查询
+- ✅ 自动 fallback 到百度搜索
+- ✅ 流式输出实时响应
+
+---
+
 ## 一、项目背景与现状
 
 ### 1.1 测试结果回顾
@@ -27,41 +47,93 @@
 ### 2.1 整体架构
 
 ```
+
 ┌─────────────────────────────────────────────────────────────────┐
+
 │                        用户请求入口                               │
+
 │              (CLI / API / WebSocket 流式响应)                    │
+
 └────────────────────────────┬────────────────────────────────────┘
+
                              │
+
 ┌────────────────────────────▼────────────────────────────────────┐
-│                     Agent 编排层 (LangGraph)                      │
+
+│                     Agent 编排层 (ReAct 模式)                     │
+
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │                    StateGraph                               │ │
-│  │  ┌─────────┐    ┌──────────┐    ┌────────────┐            │ │
-│  │  │ Intent  │───▶│  Router  │───▶│  Execute   │            │ │
-│  │  │  Node   │    │           │    │   Skill    │            │ │
-│  │  └─────────┘    └──────────┘    └────────────┘            │ │
-│  │       │                                   │                 │ │
-│  │       │          ┌────────────┐           │                 │ │
-│  │       └─────────▶│  Format    │◀─────────┘                 │ │
-│  │                  │   Node    │                            │ │
-│  │                  └────────────┘                            │ │
+
+│  │                    ReAct Agent                              │ │
+
+│  │  - 意图分析 → 工具选择 → 执行 → 评估 → 重试                 │ │
+
+│  │  - 支持多轮迭代，最大 5 次                                   │ │
+
+│  │  - 自主决策重试策略                                          │ │
+
 │  └────────────────────────────────────────────────────────────┘ │
+
 └────────────────────────────┬────────────────────────────────────┘
+
                              │
+
 ┌────────────────────────────▼────────────────────────────────────┐
-│                        Skills 层                                 │
+
+│                        LangChain Tools 层                        │
+
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+
+│  │ query_anime  │  │get_anime_   │  │get_anime_    │  │ web_search  │
+
+│  │              │  │  detail     │  │  ranking     │  │  (百度搜索)  │
+
+│  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘
+
+└────────────────────────────┬────────────────────────────────────┘
+
+                             │
+
+┌────────────────────────────▼────────────────────────────────────┐
+
+│                        Skills 层                                │
+
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
-│  │ AnimeQuery   │  │ AnimeDetail  │  │ Ranking      │         │
-│  │ Skill        │  │ Skill        │  │ Skill        │         │
+
+│  │ AnimeQuery   │  │ AnimeDetail  │  │   Ranking   │         │
+
+│  │   Skill     │  │   Skill      │  │   Skill     │         │
+
 │  └──────────────┘  └──────────────┘  └──────────────┘         │
+
 └────────────────────────────┬────────────────────────────────────┘
+
                              │
+
 ┌────────────────────────────▼────────────────────────────────────┐
+
 │                    数据源适配器层                                │
+
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │
-│  │ BangumiAPI   │  │ BilibiliAPI  │  │ CacheAdapter │        │
+
+│  │  Jikan API  │  │  AniList API │  │Baidu Search │        │
+
+│  │(MyAnimeList)│  │  (全球数据)  │  │  (Fallback)  │        │
+
 │  └──────────────┘  └──────────────┘  └──────────────┘        │
+
+│                                                                  │
+
+│  ┌──────────────┐  ┌──────────────┐                           │
+
+│  │ DataSource   │  │  QueryCache  │                           │
+
+│  │   Router     │  │              │                           │
+
+│  └──────────────┘  └──────────────┘                           │
+
 └─────────────────────────────────────────────────────────────────┘
+
 ```
 
 ### 2.2 优化策略
@@ -192,33 +264,38 @@ class DataSourceRouter:
 
 ```
 anime-agent/
-├── .env
-├── requirements.txt
-├── pyproject.toml
+├── .env                          # 环境变量配置
+├── .env.example                  # 环境变量示例
+├── requirements.txt              # Python 依赖
+├── agent.md                      # 项目文档
+├── minimax使用手册.md            # MiniMax 使用手册
+├── quickstart.md                 # 快速开始
 ├── src/
 │   ├── __init__.py
-│   ├── main.py                 # FastAPI 入口
-│   ├── config.py               # 配置管理
+│   ├── main.py                   # FastAPI 入口
+│   ├── config.py                 # 配置管理
 │   ├── agent/
 │   │   ├── __init__.py
-│   │   ├── graph.py            # LangGraph 定义
-│   │   ├── state.py            # Agent 状态定义
-│   │   └── nodes.py            # 节点实现
+│   │   ├── agent.py              # ReAct Agent 核心实现
+│   │   └── tools.py             # LangChain Tools 定义
 │   ├── skills/
 │   │   ├── __init__.py
-│   │   ├── base.py             # Skill 基类
-│   │   ├── query.py            # 查询 Skill
-│   │   ├── detail.py           # 详情 Skill
-│   │   └── ranking.py          # 排行榜 Skill
+│   │   ├── base.py              # Skill 基类
+│   │   ├── query.py             # 查询 Skill
+│   │   ├── detail.py            # 详情 Skill
+│   │   └── ranking.py           # 排行榜 Skill
 │   ├── llm/
 │   │   ├── __init__.py
-│   │   ├── client.py           # MiniMax 客户端
-│   │   └── prompts.py          # Prompt 模板
+│   │   ├── client.py            # MiniMax 客户端
+│   │   └── prompts.py           # Prompt 模板
 │   ├── data_sources/
 │   │   ├── __init__.py
-│   │   ├── base.py             # 数据源接口
-│   │   ├── bangumi.py          # Bangumi 适配器
-│   │   └── bilibili.py         # Bilibili 适配器
+│   │   ├── base.py              # 数据源接口
+│   │   ├── router.py            # 数据源路由器
+│   │   ├── jikan.py            # Jikan API (MyAnimeList)
+│   │   ├── anilist.py          # AniList API
+│   │   ├── baidu_search.py     # 百度搜索 API
+│   │   └── bangumi.py          # Bangumi API (备用)
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── query_params.py
@@ -228,11 +305,11 @@ anime-agent/
 │       ├── __init__.py
 │       ├── cache.py             # 缓存工具
 │       └── logger.py            # 日志工具
-├── tests/
-│   ├── __init__.py
-│   ├── test_skills.py
-│   └── test_agent.py
-└── logs/
+├── frontend/
+│   ├── index.html
+│   ├── app.js
+│   └── styles.css
+└── tests/
 ```
 
 ### 3.2 Agent 状态定义
@@ -645,82 +722,121 @@ FORMAT_PROMPT = """你是专业的番剧推荐助手。请将番剧数据整理�
 
 ## 六、数据源适配器
 
-### 6.1 Bangumi API 适配器
+### 6.1 数据源架构
+
+当前项目使用多数据源架构，支持智能路由和 fallback：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   DataSourceRouter (路由器)                   │
+│  platform 参数映射：                                          │
+│  - "jikan"   → Jikan API                                   │
+│  - "anilist"  → AniList API                                 │
+│  - "bangumi"  → Bangumi API                                 │
+│  - "all"      → Jikan + AniList (默认)                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 6.2 Jikan API (MyAnimeList)
 
 ```python
-# src/data_sources/bangumi.py
+# src/data_sources/jikan.py
+"""Jikan API - 免费的 MyAnimeList API"""
+
 import aiohttp
 from .base import AnimeDataSource
 from ..models.anime_info import AnimeInfo
 from ..models.query_params import QueryParams
 
-class BangumiAPI(AnimeDataSource):
-    """Bangumi 数据源"""
+class JikanAPI(AnimeDataSource):
+    """Jikan API 数据源 - 基于 MyAnimeList"""
     
-    BASE_URL = "https://api.bangumi.tv/v0"
-    NAME = "Bangumi"
+    BASE_URL = "https://api.jikan.moe/v4"
+    NAME = "Jikan"
+    
+    # 季节映射
+    SEASON_MAP = {
+        "01": "winter", "02": "winter",
+        "03": "spring", "04": "spring", "05": "spring",
+        "06": "summer", "07": "summer", "08": "summer",
+        "09": "fall", "10": "fall", "11": "fall",
+        "12": "winter"
+    }
     
     async def search(self, params: QueryParams) -> list[AnimeInfo]:
-        """搜索番剧"""
-        
-        query_params = {
-            "type": 2,  # 动画
-        }
-        
-        # 添加时间过滤
+        # 关键词搜索
+        if params.keyword:
+            return await self._search_by_keyword(params)
+        # 时间范围搜索
         if params.time_range:
-            query_params["air_date"] = params.time_range
-        
-        # 添加排序
-        sort_map = {
-            "latest": "air_date",
-            "hot": "rank",
-            "rating": "rating"
+            return await self._get_season(params)
+        # 默认当前季度
+        return await self._get_current_season(params)
+```
+
+### 6.3 AniList API (GraphQL)
+
+```python
+# src/data_sources/anilist.py
+"""AniList API - GraphQL 格式"""
+
+class AniListAPI(AnimeDataSource):
+    """AniList API 数据源"""
+    
+    BASE_URL = "https://graphql.anilist.co"
+    NAME = "AniList"
+    
+    async def search(self, params: QueryParams) -> list[AnimeInfo]:
+        # 使用 GraphQL 查询
+        query = """
+        query ($season: MediaSeason, $year: Int, $sort: [MediaSort]) {
+            Page(perPage: 20) {
+                media(season: $season, seasonYear: $year, type: ANIME, sort: $sort) {
+                    id
+                    title { english romaji native }
+                    averageScore
+                    ...
+                }
+            }
         }
-        query_params["sort"] = sort_map.get(params.sort_by, "air_date")
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{self.BASE_URL}/subjects/filter",
-                    params=query_params,
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as resp:
-                    if resp.status != 200:
-                        return []
-                    
-                    data = await resp.json()
-                    items = data.get("data", [])
-                    
-                    return [self._parse_anime(item) for item in items[:20]]  # 限制数量
-                    
-        except Exception as e:
-            logger.warning(f"Bangumi API 查询失败: {e}")
-            return []
+        """
+```
+
+### 6.4 百度搜索 API (Fallback)
+
+```python
+# src/data_sources/baidu_search.py
+"""百度搜索 API - 最后的 fallback"""
+
+class BaiduSearchAPI(AnimeDataSource):
+    """百度搜索 API 数据源"""
     
-    def _parse_anime(self, raw: dict) -> AnimeInfo:
-        """解析 Bangumi 原始数据"""
-        
-        return AnimeInfo(
-            id=f"bgm_{raw['id']}",
-            name=raw.get("name", ""),
-            name_cn=raw.get("name_cn"),
-            air_date=raw.get("air_date"),
-            rating=raw.get("rating", {}).get("score"),
-            summary=raw.get("summary", ""),
-            platform="Bangumi",
-            source_url=f"https://bangumi.tv/subject/{raw['id']}",
-            cover_url=raw.get("images", {}).get("large")
-        )
+    BASE_URL = "https://qianfan.baidubce.com/v2/ai_search/web_search"
+    NAME = "BaiduSearch"
     
-    async def get_detail(self, anime_id: str) -> AnimeInfo | None:
-        """获取番剧详情"""
-        
-        bgm_id = anime_id.replace("bgm_", "")
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
+    async def search(self, params: QueryParams) -> list[AnimeInfo]:
+        # 当其他数据源失败时使用
+        # 调用百度千帆搜索 API
+```
+
+### 6.5 数据源路由
+
+```python
+# src/data_sources/router.py
+class DataSourceRouter:
+    """数据源路由器"""
+    
+    PLATFORM_MAP = {
+        "jikan": ["Jikan"],
+        "anilist": ["AniList"],
+        "bangumi": ["Bangumi"],
+        "all": ["Jikan", "AniList"],  # 默认
+    }
+    
+    async def search(self, params: QueryParams) -> list[AnimeInfo]:
+        # 并行查询多个数据源
+        # 合并结果并按评分排序
+```
                     f"{self.BASE_URL}/subjects/{bgm_id}",
                     timeout=aiohttp.ClientTimeout(total=5)
                 ) as resp:
@@ -890,6 +1006,10 @@ ORCH_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 ORCH_MODEL=MiniMax/MiniMax-M2.5
 ORCH_API_KEY=sk-your-api-key-here
 
+# 百度搜索 API 配置（可选，用于 fallback）
+# 通过百度智能云千帆获取：https://qianfan.baidubce.com/
+BAIDU_SEARCH_API_KEY=your-baidu-api-key-here
+
 # 日志配置（可选）
 LOG_LEVEL=INFO
 
@@ -993,13 +1113,16 @@ print(result["final_response"])
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      LangChain Agent                         │
+│                      ReAct Agent                             │
 │  ┌─────────────────────────────────────────────────────┐  │
 │  │  LLM (MiniMax) + Tools                               │  │
 │  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐   │  │
 │  │  │query_anime │ │get_detail  │ │get_ranking │   │  │
 │  │  │  Tool      │ │   Tool     │ │   Tool     │   │  │
 │  │  └─────────────┘ └─────────────┘ └─────────────┘   │  │
+│  │  ┌─────────────────────────────────────────────┐   │  │
+│  │  │ web_search Tool (百度搜索 - Fallback)        │   │  │
+│  │  └─────────────────────────────────────────────┘   │  │
 │  └─────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
                            │
@@ -1007,63 +1130,67 @@ print(result["final_response"])
               ┌────────────────────────────┐
               │    MiniMax LLM             │
               │    (自动决定调用哪个工具)   │
+              │    - 支持多轮迭代          │
+              │    - 自主决策重试策略      │
               └────────────────────────────┘
 ```
 
-### 10.2 Tools 实现
+### 10.2 当前 Tools 定义
 
 ```python
 # src/agent/tools.py
 """LangChain Tools 定义"""
 
-from langchain.tools import Tool
+from langchain_core.tools import BaseTool
+from pydantic import Field
 from ..skills.query import AnimeQuerySkill
 from ..skills.detail import AnimeDetailSkill
 from ..skills.ranking import RankingSkill
 
 
-def create_tools() -> list[Tool]:
-    """创建 LangChain Tools"""
+class QueryAnimeInput(BaseTool):
+    """query_anime 工具的参数"""
+    time_range: str = Field(default="", description="时间范围，如 '2026-02'、'2024年7月'、'本月'、'最新'")
+    platform: str = Field(default="all", description="平台：'jikan'、'anilist'、'bangumi'、'all'")
+    anime_type: str = Field(default="all", description="类型：'日漫'、'国漫'、'all'")
+    sort_by: str = Field(default="rating", description="排序：'latest'、'hot'、'rating'")
+    keyword: str = Field(default="", description="关键词搜索，如番剧名称")
+
+
+class QueryAnimeTool(BaseTool):
+    """番剧查询工具 - 最重要！"""
     
-    query_skill = AnimeQuerySkill()
-    detail_skill = AnimeDetailSkill()
-    ranking_skill = RankingSkill()
+    name: str = "query_anime"
+    description: str = """查询番剧列表。
     
-    # 番剧查询 Tool
-    query_anime_tool = Tool(
-        name="query_anime",
-        description="""查询番剧信息。当用户想了解番剧列表、最新番剧、特定类型的番剧时使用。
-        输入参数：
-        - time_range: 时间范围（如"2026-03"、"本周"、"最新"）
-        - platform: 平台（bilibili/iqiyi/tencent/all）
-        - anime_type: 类型（日漫/国漫/美漫/剧场版/all）
-        - sort_by: 排序（latest/hot/rating）
-        - keyword: 关键词（可选）""",
-        func=lambda x: _run_sync(query_skill, x)
-    )
+**重要**：当用户询问特定番剧时（如"《xxx》讲了什么"），必须使用 keyword 参数！
+
+参数：
+- time_range: 时间范围
+- platform: 平台选择（jikan/anilist/bangumi/all）
+- keyword: 关键词搜索（最重要！）"""
+
+
+class WebSearchTool(BaseTool):
+    """网页搜索工具 - Fallback"""
     
-    # 番剧详情 Tool
-    get_detail_tool = Tool(
-        name="get_anime_detail",
-        description="""获取特定番剧的详细信息。当用户询问某个具体番剧的详细信息、剧情介绍、评分等时使用。
-        输入参数：
-        - anime_id: 番剧 ID（可以从查询结果中获取）""",
-        func=lambda x: _run_sync(detail_skill, x)
-    )
-    
-    # 排行榜 Tool
-    get_ranking_tool = Tool(
-        name="get_anime_ranking",
-        description="""获取番剧排行榜。当用户想了解热门番剧、评分最高的番剧、最受好评的番剧时使用。
-        输入参数：
-        - time_range: 时间范围（如"本周"、"本月"、"2026年"）
-        - platform: 平台（bilibili/iqiyi/tencent/all）
-        - anime_type: 类型（日漫/国漫/美漫/all）
-        - sort_by: 排序方式（rating/hot）""",
-        func=lambda x: _run_sync(ranking_skill, x)
-    )
-    
-    return [query_anime_tool, get_detail_tool, get_ranking_tool]
+    name: str = "web_search"
+    description: str = """通用网页搜索工具。
+
+当数据库查询失败时使用此工具搜索互联网。
+- query: 搜索关键词
+- 这是最后的 fallback 手段！"""
+
+
+def create_tools() -> list[BaseTool]:
+    """创建所有 LangChain Tools"""
+    return [
+        QueryAnimeTool(),
+        GetAnimeDetailTool(),
+        GetAnimeRankingTool(),
+        WebSearchTool()  # 新增百度搜索
+    ]
+```
 
 
 def _run_sync(skill, params: dict) -> str:

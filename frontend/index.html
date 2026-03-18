@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>番剧智能助手</title>
     <link rel="stylesheet" href="styles.css">
+    <!-- 引入 markdown-it -->
+    <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.0.0/dist/markdown-it.min.js"></script>
+    <script>
+        // 初始化 markdown-it
+        window.md = window.markdownit({
+            html: false,
+            linkify: true,
+            typographer: true
+        });
+    </script>
 </head>
 <body>
     <div class="container">
@@ -17,7 +27,7 @@
         <!-- 对话区域 -->
         <div class="chat-container">
             <div class="messages" id="messages">
-                <div class="message bot">
+                <div class="message assistant">
                     <div class="avatar">🤖</div>
                     <div class="content">你好！我是番剧智能助手。有什么番剧想了解的吗？你可以点击下方的快捷按钮直接查询，也可以输入你想问的问题～</div>
                 </div>
@@ -53,6 +63,6 @@
         </div>
     </div>
     
-    <script src="app.js"></script>
+    <script src="app.js?v=20260317e"></script>
 </body>
 </html>

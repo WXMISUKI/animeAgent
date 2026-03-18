@@ -9,6 +9,10 @@ langgraph>=0.2.0
 
 # 环境配置
 python-dotenv>=1.0.0
+pydantic-settings>=2.0.0
+
+# 缓存
+redis>=5.0.0
 
 # HTTP 请求（用于调用番剧数据源 API）
 requests>=2.31.0

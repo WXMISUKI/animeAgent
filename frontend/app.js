@@ -1,6 +1,6 @@
 /**
  * 番剧智能助手 - 前端交互脚本
- * 支持 ReAct 动态规划 Agent 的思考过程显示
+ * 基于设计文档: 前端对话框设计说明文档.md
  */
 
 class AnimeChatbot {
@@ -9,12 +9,14 @@ class AnimeChatbot {
         this.userInput = document.getElementById('userInput');
         this.sendBtn = document.getElementById('sendBtn');
         this.apiStatus = document.getElementById('apiStatus');
-        
-        // API 地址
         this.apiBase = 'http://localhost:8000';
         
-        // 当前思考步骤
-        this.currentThinkingDiv = null;
+        // 加载状态
+        this.isLoading = false;
+        this.abortController = null;
+        
+        // 对话历史
+        this.messages = [];
         
         this.init();
     }
@@ -46,10 +48,7 @@ class AnimeChatbot {
     
     async checkApiStatus() {
         try {
-            const response = await fetch(`${this.apiBase}/health`, {
-                method: 'GET'
-            });
-            
+            const response = await fetch(`${this.apiBase}/health`, { method: 'GET' });
             if (response.ok) {
                 this.apiStatus.textContent = 'API 状态: ✓ 在线';
                 this.apiStatus.classList.add('online');
@@ -58,232 +57,491 @@ class AnimeChatbot {
             }
         } catch (e) {
             this.apiStatus.textContent = 'API 状态: ✗ 离线';
-            console.error('API 状态检查失败:', e);
         }
     }
     
     async sendMessage() {
         const message = this.userInput.value.trim();
-        if (!message) return;
+        if (!message || this.isLoading) return;
         
         // 添加用户消息
-        this.addMessage(message, 'user');
+        this.addMessage('user', message);
         this.userInput.value = '';
         
-        // 禁用发送按钮
-        this.sendBtn.disabled = true;
+        // 创建AI消息容器
+        const botMsg = this.addAssistantMessage();
         
-        // 添加机器人消息（流式输出）
-        const botMsg = this.addMessage('', 'bot');
-        const contentDiv = botMsg.querySelector('.content');
+        // 获取思考过程和内容区域
+        const thinkingContainer = botMsg.querySelector('.thinking-container');
+        const contentArea = botMsg.querySelector('.content-area');
         
-        // 使用 SSE 流式接口
+        // 设置加载状态
+        this.setLoading(true);
+        
+        // 发送请求
         try {
+            this.abortController = new AbortController();
             const response = await fetch(`${this.apiBase}/api/chat/stream`, {
                 method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     query: message,
-                    user_id: this.getUserId()
-                })
+                    history: this.getHistory()
+                }),
+                signal: this.abortController.signal
             });
             
             if (!response.ok) {
                 throw new Error(`API 请求失败: ${response.status}`);
             }
             
-            // 读取流式响应
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
+            // 处理流式响应
+            await this.processStream(response, thinkingContainer, contentArea);
             
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                
-                buffer += decoder.decode(value, { stream: true });
-                
-                // 处理 SSE 格式的数据
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-                
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        try {
-                            const data = JSON.parse(line.slice(6));
-                            
-                            // 处理不同类型的消息
-                            if (data.type === 'thinking') {
-                                // 思考过程 - 显示推理步骤
-                                this.handleThinking(data, contentDiv);
-                            }
-                            else if (data.type === 'tool') {
-                                // 工具调用
-                                this.handleTool(data, contentDiv);
-                            }
-                            else if (data.type === 'tool_result') {
-                                // 工具结果
-                                this.handleToolResult(data, contentDiv);
-                            }
-                            else if (data.type === 'output') {
-                                // 最终回复
-                                if (data.content) {
-                                    contentDiv.innerHTML += data.content.replace(/\n/g, '<br>');
-                                    this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
-                                }
-                            }
-                            else if (data.type === 'error') {
-                                // 错误信息
-                                contentDiv.innerHTML += `<br><span style="color: red;">错误: ${data.content}</span>`;
-                                this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
-                            }
-                            else if (data.type === 'done') {
-                                // 完成
-                                this.sendBtn.disabled = false;
-                                this.userInput.focus();
-                            }
-                            else if (data.content) {
-                                // 兼容旧格式
-                                contentDiv.innerHTML += data.content.replace(/\n/g, '<br>');
-                                this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
-                            }
-                            
-                        } catch (e) {
-                            // 忽略解析错误
-                        }
+        } catch (e) {
+            if (e.name === 'AbortError') {
+                contentArea.innerHTML += '<br>[已停止]';
+            } else {
+                console.error('请求错误:', e);
+                contentArea.innerHTML = `抱歉，服务暂时不可用。<br>错误信息: ${e.message}`;
+            }
+        }
+        
+        // 结束加载状态
+        this.setLoading(false);
+        this.abortController = null;
+    }
+    
+    async processStream(response, thinkingContainer, contentArea) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        this.handleStreamData(data, thinkingContainer, contentArea);
+                    } catch (e) {
+                        // 忽略解析错误
                     }
                 }
             }
-            
-        } catch (e) {
-            console.error('请求错误:', e);
-            contentDiv.innerHTML = `抱歉，服务暂时不可用。<br>错误信息: ${e.message}`;
-            this.sendBtn.disabled = false;
-            this.userInput.focus();
+        }
+        
+        // 完成后添加到历史
+        const content = contentArea.innerHTML;
+        if (content) {
+            this.messages.push({ role: 'assistant', content: content });
         }
     }
     
-    /**
-     * 处理思考过程
-     * 显示 LLM 的推理步骤：thought → action → action_input
-     */
-    handleThinking(data, container) {
-        const step = data.step || 1;
-        const thought = data.thought || '';
-        const action = data.action || '';
-        const actionInput = data.action_input || {};
+    handleStreamData(data, thinkingContainer, contentArea) {
+        const type = data.type;
         
-        // 创建思考过程显示区域
-        let thinkingDiv = container.querySelector('.thinking-process');
-        if (!thinkingDiv) {
-            thinkingDiv = document.createElement('div');
-            thinkingDiv.className = 'thinking-process';
-            thinkingDiv.innerHTML = '<div class="thinking-header">🤔 AI 思考过程</div>';
-            container.appendChild(thinkingDiv);
+        // 获取思考内容区域
+        const thinkingContent = thinkingContainer.querySelector('.thinking-content');
+        
+        // 如果有增量数据，添加到思考过程区域
+        if (data.intent_delta || data.params_delta || data.plan_delta || data.exec_delta) {
+            this.handleThinkingIncremental(data, thinkingContent);
+            return;
         }
         
-        // 添加新的思考步骤
-        const stepDiv = document.createElement('div');
-        stepDiv.className = 'thinking-step';
-        
-        let actionInputStr = '';
-        if (actionInput && Object.keys(actionInput).length > 0) {
-            actionInputStr = `<div class="action-input">参数: ${JSON.stringify(actionInput)}</div>`;
+        switch (type) {
+            case 'thinking':
+                // 思考过程
+                this.handleThinking(data, thinkingContent);
+                break;
+            case 'content':
+                // 内容（已废弃，使用output）
+                break;
+            case 'output':
+                // 输出内容
+                this.handleOutput(data, contentArea);
+                break;
+            case 'step_status':
+                // 步骤状态
+                this.handleStepStatus(data, thinkingContent);
+                break;
+            case 'plan':
+                // 执行计划
+                this.handlePlan(data, thinkingContent);
+                break;
+            case 'done':
+                // 完成
+                this.scrollToBottom();
+                break;
+            case 'error':
+                // 错误
+                contentArea.innerHTML += `<br><span style="color: red;">错误: ${data.content || data.message}</span>`;
+                break;
+            default:
+                // 忽略未知类型
+                break;
         }
-        
-        stepDiv.innerHTML = `
-            <div class="step-title">📝 步骤 ${step}</div>
-            <div class="thought">💭 ${this.escapeHtml(thought)}</div>
-            ${action ? `<div class="action">⚡ 行动: ${action}</div>` : ''}
-            ${actionInputStr}
-        `;
-        
-        thinkingDiv.appendChild(stepDiv);
-        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
     }
     
-    /**
-     * 处理工具调用
-     */
-    handleTool(data, container) {
-        let toolDiv = container.querySelector('.tool-process');
-        if (!toolDiv) {
-            toolDiv = document.createElement('div');
-            toolDiv.className = 'tool-process';
-            toolDiv.innerHTML = '<div class="tool-header">🔧 工具执行</div>';
-            container.appendChild(toolDiv);
+    // 处理增量数据（意图、计划、执行的增量更新）- 流式输出
+    handleThinkingIncremental(data, container) {
+        // 显示思考过程容器
+        const thinkingContainer = container.closest('.thinking-container');
+        if (thinkingContainer && thinkingContainer.style.display === 'none') {
+            thinkingContainer.style.display = 'block';
         }
         
-        const toolMsg = document.createElement('div');
-        toolMsg.className = 'tool-message';
-        toolMsg.innerHTML = this.escapeHtml(data.content || '');
-        toolDiv.appendChild(toolMsg);
-        
-        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
-    }
-    
-    /**
-     * 处理工具结果
-     */
-    handleToolResult(data, container) {
-        let toolDiv = container.querySelector('.tool-process');
-        if (!toolDiv) {
-            toolDiv = document.createElement('div');
-            toolDiv.className = 'tool-process';
-            container.appendChild(toolDiv);
+        // 意图解析 - parsing状态
+        if (data.status === 'parsing') {
+            if (data.intent_delta) {
+                let step = container.querySelector('.step-intent');
+                if (!step) {
+                    step = document.createElement('div');
+                    step.className = 'process-step step-intent';
+                    step.innerHTML = `<div class="step-title">🎯 意图解析</div><div class="step-content parsing"></div>`;
+                    container.appendChild(step);
+                }
+                step.querySelector('.step-content').textContent = data.intent_delta;
+            }
+            if (data.params_delta) {
+                let step = container.querySelector('.step-params');
+                if (!step) {
+                    step = document.createElement('div');
+                    step.className = 'process-step step-params';
+                    step.innerHTML = `<div class="step-content"></div>`;
+                    container.appendChild(step);
+                }
+                step.querySelector('.step-content').textContent = '参数: ' + data.params_delta;
+            }
         }
         
-        const resultDiv = document.createElement('div');
-        resultDiv.className = 'tool-result';
-        resultDiv.innerHTML = `<div class="result-label">📊 结果:</div><pre>${this.escapeHtml(data.content || '')}</pre>`;
-        toolDiv.appendChild(resultDiv);
+        // 意图完成 - done状态
+        if (data.status === 'done' && data.type === 'intent' && data.intent) {
+            let step = container.querySelector('.step-intent');
+            if (!step) {
+                step = document.createElement('div');
+                step.className = 'process-step step-intent';
+                container.appendChild(step);
+            }
+            step.className = 'process-step step-intent done';
+            step.innerHTML = `<div class="step-title">🎯 意图解析</div><div class="step-content done">✅ ${this.getIntentName(data.intent)} <br><small>${this.escapeHtml(JSON.stringify(data.params))}</small></div>`;
+        }
         
-        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+        // 计划生成 - parsing状态
+        if (data.type === 'plan' && data.status === 'planning' && data.plan_delta) {
+            let step = container.querySelector('.step-plan');
+            if (!step) {
+                step = document.createElement('div');
+                step.className = 'process-step step-plan';
+                step.innerHTML = `<div class="step-title">📋 执行计划</div><div class="step-content"></div>`;
+                container.appendChild(step);
+            }
+            const contentDiv = step.querySelector('.step-content');
+            if (contentDiv.textContent) {
+                contentDiv.innerHTML += '<br>' + data.plan_delta;
+            } else {
+                contentDiv.textContent = data.plan_delta;
+            }
+        }
+        
+        // 计划完成 - done状态
+        if (data.type === 'plan' && data.status === 'done' && data.plan) {
+            let step = container.querySelector('.step-plan');
+            if (!step) {
+                step = document.createElement('div');
+                step.className = 'process-step step-plan';
+                container.appendChild(step);
+            }
+            step.className = 'process-step step-plan done';
+            let planHtml = '<div class="step-title">📋 执行计划</div><div class="step-content done">';
+            data.plan.forEach((p, i) => {
+                planHtml += `<div>${i+1}. ${p.tool}: ${JSON.stringify(p.params)}</div>`;
+            });
+            planHtml += '</div>';
+            step.innerHTML = planHtml;
+        }
+        
+        // 工具执行 - executing状态
+        if (data.type === 'execution' && data.status === 'executing' && data.exec_delta) {
+            let step = container.querySelector('.step-exec');
+            if (!step) {
+                step = document.createElement('div');
+                step.className = 'process-step step-exec';
+                step.innerHTML = `<div class="step-title">🔧 工具执行</div><div class="step-content"></div>`;
+                container.appendChild(step);
+            }
+            const contentDiv = step.querySelector('.step-content');
+            if (contentDiv.innerHTML) {
+                contentDiv.innerHTML += '<br>' + data.exec_delta;
+            } else {
+                contentDiv.textContent = data.exec_delta;
+            }
+        }
+        
+        // 执行完成 - done状态
+        if (data.type === 'execution' && data.status === 'done' && data.results) {
+            let step = container.querySelector('.step-exec');
+            if (!step) {
+                step = document.createElement('div');
+                step.className = 'process-step step-exec';
+                container.appendChild(step);
+            }
+            step.className = 'process-step step-exec done';
+            step.innerHTML = `<div class="step-title">🔧 工具执行</div><div class="step-content done">✅ 执行完成</div>`;
+        }
+        
+        this.scrollToBottom();
     }
     
-    /**
-     * HTML 转义
-     */
     escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
     }
     
-    addMessage(content, type, isLoading = false) {
+    getIntentName(intent) {
+        const names = {
+            'greeting': '打招呼',
+            'capability': '询问能力',
+            'query': '番剧查询',
+            'detail': '番剧详情',
+            'ranking': '排行榜',
+            'thanks': '感谢',
+            'chat': '闲聊'
+        };
+        return names[intent] || intent;
+    }
+    
+    handleThinking(data, container) {
+        // 思考过程 - 直接追加内容
+        const content = data.delta || data.thought || '';
+        if (content) {
+            const p = document.createElement('p');
+            p.textContent = content;
+            container.appendChild(p);
+            this.scrollToBottom();
+        }
+    }
+    
+    handleOutput(data, contentArea) {
+        const status = data.status;
+        
+        if (status === 'streaming') {
+            // 流式输出 - 增量追加
+            const delta = data.content_delta || data.content || '';
+            if (delta) {
+                contentArea.innerHTML += delta;
+                this.scrollToBottom();
+            }
+        } else if (status === 'done') {
+            // 完成 - 将现有的纯文本内容转换为 Markdown 渲染
+            // 不再替换 innerHTML，保留流式显示的过程
+            const currentContent = contentArea.innerHTML;
+            if (currentContent) {
+                // 将现有内容作为纯文本，然后渲染 Markdown
+                // 由于内容已经是 HTML 形式，我们需要将 HTML 实体转回文本再渲染
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = currentContent;
+                const textContent = tempDiv.textContent || currentContent;
+                
+                // 使用 Markdown 渲染
+                if (window.md) {
+                    contentArea.innerHTML = window.md.render(textContent);
+                } else if (window.marked) {
+                    contentArea.innerHTML = window.marked.parse(textContent);
+                }
+                // 如果没有 Markdown 库，保留原样
+            }
+            this.scrollToBottom();
+        }
+    }
+    
+    handleStepStatus(data, container) {
+        const step = data.step || 1;
+        const status = data.status || 'running';
+        const tool = data.tool || '';
+        
+        // 创建步骤状态元素
+        const stepDiv = document.createElement('div');
+        stepDiv.className = 'step-item';
+        
+        const icons = {
+            'running': '🔄',
+            'completed': '✅',
+            'failed': '❌',
+            'fallback_success': '⚠️',
+            'error': '❌'
+        };
+        
+        const colors = {
+            'running': '#2196f3',
+            'completed': '#4caf50',
+            'failed': '#f44336',
+            'fallback_success': '#ff9800',
+            'error': '#e91e63'
+        };
+        
+        stepDiv.innerHTML = `
+            <span class="step-icon" style="color: ${colors[status] || '#999'}">${icons[status] || '⬜'}</span>
+            <span class="step-text">步骤${step}: ${tool || '处理中'}</span>
+        `;
+        
+        container.appendChild(stepDiv);
+        this.scrollToBottom();
+    }
+    
+    handlePlan(data, container) {
+        const plan = data.plan || [];
+        if (plan.length === 0) return;
+        
+        // 创建计划元素
+        const planDiv = document.createElement('div');
+        planDiv.className = 'plan-item';
+        
+        let planHtml = '<div class="plan-title">📋 执行计划</div>';
+        plan.forEach((step, i) => {
+            planHtml += `<div class="plan-step">⏳ ${i + 1}. ${step.tool}: ${JSON.stringify(step.params)}</div>`;
+        });
+        
+        planDiv.innerHTML = planHtml;
+        container.appendChild(planDiv);
+        this.scrollToBottom();
+    }
+    
+    addMessage(role, content) {
         const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${type}${isLoading ? ' loading' : ''}`;
+        messageDiv.className = `message ${role}`;
         
-        const avatar = type === 'user' ? '👤' : '🤖';
-        
-        // 处理内容中的换行
-        const formattedContent = content.replace(/\n/g, '<br>');
+        const avatar = role === 'user' ? '👤' : '🤖';
         
         messageDiv.innerHTML = `
             <div class="avatar">${avatar}</div>
-            <div class="content">${formattedContent}</div>
+            <div class="content">${content}</div>
         `;
         
         this.messagesContainer.appendChild(messageDiv);
-        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+        this.scrollToBottom();
+        
+        // 添加到历史
+        this.messages.push({ role, content });
         
         return messageDiv;
     }
     
-    getUserId() {
-        // 生成或获取用户 ID
-        let userId = localStorage.getItem('anime_chat_user_id');
-        if (!userId) {
-            userId = 'user_' + Math.random().toString(36).substr(2, 9);
-            localStorage.setItem('anime_chat_user_id', userId);
+    addAssistantMessage() {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message assistant';
+        
+        // 使用设计文档中的结构
+        messageDiv.innerHTML = `
+            <div class="avatar">🤖</div>
+            <div class="content">
+                <!-- 思考过程容器（默认收起） -->
+                <div class="thinking-container" style="display: none;">
+                    <div class="thinking-header" onclick="toggleThinking(this)">
+                        🔍 思考过程 <span class="toggle-icon">▼</span>
+                    </div>
+                    <div class="thinking-content"></div>
+                </div>
+                <!-- 正式响应区 -->
+                <div class="content-area"></div>
+            </div>
+        `;
+        
+        this.messagesContainer.appendChild(messageDiv);
+        
+        // 绑定点击事件
+        const header = messageDiv.querySelector('.thinking-header');
+        header.onclick = () => this.toggleThinking(header);
+        
+        this.scrollToBottom();
+        return messageDiv;
+    }
+    
+    toggleThinking(header) {
+        const container = header.parentElement;
+        const content = container.querySelector('.thinking-content');
+        const icon = header.querySelector('.toggle-icon');
+        
+        if (content.style.display === 'none') {
+            content.style.display = 'block';
+            icon.textContent = '▲';
+        } else {
+            content.style.display = 'none';
+            icon.textContent = '▼';
         }
-        return userId;
+    }
+    
+    setLoading(loading) {
+        this.isLoading = loading;
+        
+        // 禁用输入和发送按钮
+        this.userInput.disabled = loading;
+        this.sendBtn.disabled = loading;
+        
+        // 禁用快捷按钮
+        document.querySelectorAll('.action-btn').forEach(btn => {
+            btn.disabled = loading;
+            btn.style.opacity = loading ? '0.5' : '1';
+            btn.style.cursor = loading ? 'not-allowed' : 'pointer';
+        });
+        
+        // 切换发送/停止按钮
+        if (loading) {
+            this.sendBtn.innerHTML = '停止';
+            this.sendBtn.onclick = () => this.stopGenerating();
+        } else {
+            this.sendBtn.innerHTML = '发送';
+            this.sendBtn.onclick = () => this.sendMessage();
+        }
+    }
+    
+    stopGenerating() {
+        if (this.abortController) {
+            this.abortController.abort();
+        }
+    }
+    
+    getHistory() {
+        // 获取最近10条历史消息
+        return this.messages.slice(-10);
+    }
+    
+    scrollToBottom() {
+        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+    }
+}
+
+// 全局切换函数
+function toggleThinking(header) {
+    const container = header.parentElement;
+    const content = container.querySelector('.thinking-content');
+    const icon = header.querySelector('.toggle-icon');
+    
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        icon.textContent = '▲';
+    } else {
+        content.style.display = 'none';
+        icon.textContent = '▼';
     }
 }
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
+    // 初始化markdown-it
+    window.md = window.markdownit({
+        html: false,
+        linkify: true,
+        typographer: true
+    });
+    
     new AnimeChatbot();
 });
