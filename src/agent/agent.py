@@ -314,11 +314,16 @@ class IntentParser:
 用户问题: {user_input}
 意图类型: {intent}{context_hint}
 
+重要规则：
+- 如果用户提到"国漫"、"国产动画"、"国产动漫"，必须设置 anime_type = "国漫"
+- 如果用户提到"日漫"、"日本动画"，设置 anime_type = "日漫"
+- 如果用户提到"剧场版"、"电影"，设置 anime_type = "剧场版"
+
 请输出JSON格式的参数：
 {{
     "time_range": "时间范围，如'2026-03'、'本月'、'最新'、'2026春'（可选）",
-    "platform": "平台选择：'all'默认，'jikan'、'bangumi'（可选）",
-    "anime_type": "类型：'all'默认，'日漫'、'国漫'、'剧场版'（可选）",
+    "platform": "平台选择：'all'默认，'jikan'、'bangumi'、'bilibili'（可选）",
+    "anime_type": "类型：必填！'all'默认，'日漫'、'国漫'、'剧场版'",
     "sort_by": "排序：'rating'评分，'hot'热门，'latest'最新（可选）",
     "keyword": "关键词搜索（可选）"
 }}
@@ -334,8 +339,16 @@ class IntentParser:
             response = await self.llm.agenerate([messages])
             content = response.generations[0][0].text
             
+            logger.info(f"📝 [IntentParser] LLM返回的参数: {content}")
+            
             # 解析JSON
             params = self._parse_json(content)
+            
+            if not params:
+                logger.warning(f"⚠️ [IntentParser] 参数解析失败，返回空字典")
+                logger.warning(f"   原始内容: {content[:200]}")
+            
+            logger.info(f"🎯 [IntentParser] 解析后的参数: {params}")
             return params if params else {}
         except Exception as e:
             logger.warning(f"参数提取失败: {e}")
@@ -368,11 +381,16 @@ class IntentParser:
 用户问题: {user_input}
 意图类型: {intent}{context_hint}
 
+重要规则：
+- 如果用户提到"国漫"、"国产动画"、"国产动漫"，必须设置 anime_type = "国漫"
+- 如果用户提到"日漫"、"日本动画"，设置 anime_type = "日漫"
+- 如果用户提到"剧场版"、"电影"，设置 anime_type = "剧场版"
+
 请输出JSON格式的参数：
 {{
     "time_range": "时间范围，如'2026-03'、'本月'、'最新'、'2026春'（可选）",
-    "platform": "平台选择：'all'默认，'jikan'、'bangumi'（可选）",
-    "anime_type": "类型：'all'默认，'日漫'、'国漫'、'剧场版'（可选）",
+    "platform": "平台选择：'all'默认，'jikan'、'bangumi'、'bilibili'（可选）",
+    "anime_type": "类型：必填！'all'默认，'日漫'、'国漫'、'剧场版'",
     "sort_by": "排序：'rating'评分，'hot'热门，'latest'最新（可选）",
     "keyword": "关键词搜索（可选）"
 }}
@@ -601,8 +619,10 @@ class ResponseGenerator:
         ResponseStyle.CONCISE: """请用简洁的方式回答，包含：
 - 番剧名称
 - 评分（如有）
+- 数据来源（如：Bilibili、Jikan、Bangumi）
 - 一句话介绍
-最多3条结果。""",
+
+重要：每条结果必须标注数据来源！""",
         
         ResponseStyle.DETAILED: """请用详细的方式回答，每部番剧包含：
 - 番剧名称（原名）
@@ -610,20 +630,26 @@ class ResponseGenerator:
 - 播出时间
 - 剧情简介（50字内）
 - 标签
-- 观看平台
-使用清晰的分隔符分隔每部番剧。""",
+- 数据来源（必须标注：如 Bilibili、Jikan、Bangumi）
+使用清晰的分隔符分隔每部番剧。
+
+重要：每条结果必须标注数据来源！""",
         
         ResponseStyle.CASUAL: """请用轻松、口语化的方式回答，像朋友推荐一样：
 - 用 emoji 让内容更生动
 - 适当加入个人感受
 - 语气亲切自然
-- 不要太正式""",
+- 不要太正式
+
+重要：每条结果必须标注数据来源（如：📺 数据来源：Bilibili）！""",
         
         ResponseStyle.PROFESSIONAL: """请用专业、客观的方式回答：
 - 使用规范的术语
 - 数据准确引用
 - 结构化呈现
-- 适当加入数据对比"""
+- 适当加入数据对比
+
+重要：必须标注每条结果的数据来源（Bilibili/Jikan/Bangumi/AniList）"""
     }
     
     def __init__(self, llm: ChatOpenAI, default_style: str = ResponseStyle.CASUAL):

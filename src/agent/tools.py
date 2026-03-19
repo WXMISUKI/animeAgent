@@ -14,9 +14,9 @@ from ..skills.ranking import RankingSkill
 class QueryAnimeInput(BaseTool):
     """query_anime 工具的参数 schema"""
     time_range: str = Field(default="", description="时间范围，如 '2026-02'、'2024年7月'、'本月'、'最新'、'2024夏'")
-    platform: str = Field(default="all", description="平台，如 'jikan'、'bangumi'、'all'（默认 all）")
-    anime_type: str = Field(default="all", description="类型，如 '日漫'、'国漫'、'all'")
-    sort_by: str = Field(default="latest", description="排序方式，如 'latest'（最新）、'hot'（热门）、'rating'（评分）")
+    platform: str = Field(default="all", description="平台，如 'jikan'、'bangumi'、'bilibili'、'all'（默认 all）")
+    anime_type: str = Field(default="all", description="类型：必填参数！'all'=全部，'日漫'=日本动画，'国漫'=中国国产动画，'剧场版'=电影版，'OVA'=OVA")
+    sort_by: str = Field(default="rating", description="排序方式，如 'rating'=评分高优先，'hot'=热门优先，'latest'=最新")
     keyword: str = Field(default="", description="关键词搜索，如番剧名称 '違国日記'、'葬送的芙莉莲' 等")
 
 
@@ -62,12 +62,16 @@ class QueryAnimeTool(BaseTool):
 - "推荐几部热血类型的番剧"
 - "《違国日記》讲了什么？" - 使用 keyword 参数搜索具体番剧
 
-**重要**：当用户询问特定番剧的详情时（如"《xxx》讲了什么"），应优先使用 keyword 参数搜索！
+**重要规则**：
+1. 当用户提到"国漫"、"国产动画"，必须设置 anime_type = "国漫"！
+2. 当用户提到"日漫"、"日本动画"，设置 anime_type = "日漫"！
+3. 当用户提到"剧场版"、"电影版"，设置 anime_type = "剧场版"！
+4. anime_type 是必填参数，不能留空！
 
 参数：
 - time_range: 时间范围（可选），如 "2026-02"、"2024年7月"、"2024夏"、"本月"、"最新"
-- platform: 平台（可选），如 "jikan"（MyAnimeList）、"bangumi"、"all"（默认 all）
-- anime_type: 类型（可选），如 "日漫"、"国漫"、"all"（默认 all）
+- platform: 平台（可选），如 "jikan"（MyAnimeList）、"bangumi"、"bilibili"、"all"（默认 all）
+- anime_type: 类型（必填！），如 "日漫"、"国漫"、"剧场版"、"OVA"、"all"
 - sort_by: 排序（可选），如 "latest"（最新）、"hot"（热门）、"rating"（评分，默认 rating）
 - keyword: 关键词（可选），如番剧名称 "違国日記"、"葬送的芙莉莲"、"Spy x Family" """
 

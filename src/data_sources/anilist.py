@@ -34,21 +34,55 @@ class AniListAPI(AnimeDataSource):
         "12": "WINTER"
     }
     
+    # 中文类型映射到 AniList format
+    CHINESE_TYPE_MAP = {
+        "剧场版": "MOVIE",
+        "电影": "MOVIE",
+        "OVA": "OVA",
+        "OAD": "OVA",
+        "TV": "TV",
+        "动画": "TV",
+        "特别篇": "SPECIAL",
+        "SP": "SPECIAL",
+        "网盘": "ONA",
+        "音乐": "MUSIC"
+    }
+    
+    def _parse_anime_type(self, anime_type: str) -> Optional[str]:
+        """解析动画类型"""
+        if not anime_type or anime_type == "all":
+            return None
+        
+        # 先尝试中文映射
+        if anime_type in self.CHINESE_TYPE_MAP:
+            return self.CHINESE_TYPE_MAP[anime_type]
+        
+        # 直接使用大写英文
+        anime_type_upper = anime_type.upper()
+        valid_formats = ["TV", "TV_SHORT", "OVA", "ONA", "MOVIE", "SPECIAL", "MUSIC"]
+        if anime_type_upper in valid_formats:
+            return anime_type_upper
+        
+        return None
+    
     async def search(self, params: QueryParams) -> list[AnimeInfo]:
         """搜索番剧"""
         
+        # 解析动画类型
+        anime_format = self._parse_anime_type(params.anime_type)
+        
         # 关键词搜索
         if params.keyword:
-            return await self._search_by_keyword(params)
+            return await self._search_by_keyword(params, anime_format)
         
         # 时间范围搜索
         if params.time_range:
-            return await self._get_season(params)
+            return await self._get_season(params, anime_format)
         
         # 默认获取当前季节
-        return await self._get_current_season(params)
+        return await self._get_current_season(params, anime_format)
     
-    async def _get_current_season(self, params: QueryParams) -> list[AnimeInfo]:
+    async def _get_current_season(self, params: QueryParams, anime_format: str = None) -> list[AnimeInfo]:
         """获取当前季节番剧"""
         
         from datetime import datetime
@@ -56,9 +90,9 @@ class AniListAPI(AnimeDataSource):
         year = now.year
         season = self.SEASON_MAP[f"{now.month:02d}"]
         
-        return await self._fetch_season(year, season, params.sort_by)
+        return await self._fetch_season(year, season, params.sort_by, anime_format)
     
-    async def _get_season(self, params: QueryParams) -> list[AnimeInfo]:
+    async def _get_season(self, params: QueryParams, anime_format: str = None) -> list[AnimeInfo]:
         """获取指定季节番剧"""
         
         import re
@@ -71,7 +105,7 @@ class AniListAPI(AnimeDataSource):
         # 匹配年份
         match = re.match(r"(\d{4})(?:-(\d{1,2}))?", time_range)
         if not match:
-            return await self._get_current_season(params)
+            return await self._get_current_season(params, anime_format)
         
         year = int(match.group(1))
         month = match.group(2)
@@ -81,24 +115,26 @@ class AniListAPI(AnimeDataSource):
         else:
             season = "WINTER"  # 默认冬季
         
-        return await self._fetch_season(year, season, params.sort_by)
+        return await self._fetch_season(year, season, params.sort_by, anime_format)
     
-    async def _fetch_season(self, year: int, season: str, sort_by: str = "rating") -> list[AnimeInfo]:
+    async def _fetch_season(self, year: int, season: str, sort_by: str = "rating", anime_format: str = None) -> list[AnimeInfo]:
         """获取指定年份和季节的番剧"""
         
         # 排序
         sort_field = "SCORE_DESC" if sort_by == "rating" else "POPULARITY_DESC"
         
+        # 构建查询
         query = """
-        query ($season: MediaSeason, $year: Int, $sort: [MediaSort]) {
+        query ($season: MediaSeason, $year: Int, $sort: [MediaSort], $format: MediaFormat) {
             Page(perPage: 20) {
-                media(season: $season, seasonYear: $year, type: ANIME, sort: $sort) {
+                media(season: $season, seasonYear: $year, type: ANIME, sort: $sort, format: $format) {
                     id
                     title {
                         english
                         romaji
                         native
                     }
+                    format
                     episodes
                     duration
                     status
@@ -130,7 +166,8 @@ class AniListAPI(AnimeDataSource):
         variables = {
             "season": season,
             "year": year,
-            "sort": [sort_field]
+            "sort": [sort_field],
+            "format": anime_format
         }
         
         try:
@@ -153,21 +190,22 @@ class AniListAPI(AnimeDataSource):
             print(f"[AniListAPI] 获取季度失败: {e}")
             return []
     
-    async def _search_by_keyword(self, params: QueryParams) -> list[AnimeInfo]:
+    async def _search_by_keyword(self, params: QueryParams, anime_format: str = None) -> list[AnimeInfo]:
         """通过关键词搜索"""
         
         keyword = params.keyword or ""
         
         query = """
-        query ($search: String, $sort: [MediaSort]) {
+        query ($search: String, $sort: [MediaSort], $format: MediaFormat) {
             Page(perPage: 20) {
-                media(search: $search, type: ANIME, sort: $sort) {
+                media(search: $search, type: ANIME, sort: $sort, format: $format) {
                     id
                     title {
                         english
                         romaji
                         native
                     }
+                    format
                     episodes
                     duration
                     status
@@ -200,7 +238,8 @@ class AniListAPI(AnimeDataSource):
         
         variables = {
             "search": keyword,
-            "sort": [sort_field]
+            "sort": [sort_field],
+            "format": anime_format
         }
         
         try:

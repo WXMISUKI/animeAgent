@@ -32,10 +32,12 @@ class AnimeInfo:
             "原名": self.name,
             "播出时间": self.air_date,
             "评分": self.rating,
-            "简介": self.summary[:50] + "..." if len(self.summary) > 50 else self.summary,
+            "简介": self.summary[:100] + "..." if len(self.summary) > 100 else self.summary,
+            "数据来源": self.platform,  # 数据来源平台
             "平台": self.platform,
             "链接": self.source_url,
-            "封面": self.cover_url
+            "封面": self.cover_url,
+            "标签": self.tags
         }
     
     @classmethod

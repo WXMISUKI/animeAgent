@@ -32,9 +32,18 @@ except ImportError:
 
 # 配置标准日志
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG,
+    format='%(asctime)s | %(levelname)s | %(name)s | %(message)s'
 )
+
+# 设置各个模块的日志级别
+logging.getLogger("DataSourceRouter").setLevel(logging.DEBUG)
+logging.getLogger("BilibiliAPI").setLevel(logging.DEBUG)
+logging.getLogger("BangumiAPI").setLevel(logging.DEBUG)
+logging.getLogger("JikanAPI").setLevel(logging.DEBUG)
+logging.getLogger("AniListAPI").setLevel(logging.DEBUG)
+logging.getLogger("AnimeAgent").setLevel(logging.DEBUG)
+
 api_logger = logging.getLogger("API")
 
 # 创建 FastAPI 应用

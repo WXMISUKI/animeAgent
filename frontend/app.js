@@ -15,6 +15,9 @@ class AnimeChatbot {
         this.isLoading = false;
         this.abortController = null;
         
+        // 待发送消息队列（AI 回复时用户发送的消息会进入队列）
+        this.pendingMessages = [];
+        
         // 对话历史
         this.messages = [];
         
@@ -62,11 +65,21 @@ class AnimeChatbot {
     
     async sendMessage() {
         const message = this.userInput.value.trim();
-        if (!message || this.isLoading) return;
+        if (!message) return;
+        
+        // 如果 AI 正在回复，将消息加入待发送队列
+        if (this.isLoading) {
+            this.pendingMessages.push(message);
+            this.userInput.value = '';  // 清空输入框
+            this.updatePendingIndicator();  // 显示待发送提示
+            return;
+        }
+        
+        // 清空输入框
+        this.userInput.value = '';
         
         // 添加用户消息
         this.addMessage('user', message);
-        this.userInput.value = '';
         
         // 创建AI消息容器
         const botMsg = this.addAssistantMessage();
@@ -75,10 +88,15 @@ class AnimeChatbot {
         const thinkingContainer = botMsg.querySelector('.thinking-container');
         const contentArea = botMsg.querySelector('.content-area');
         
-        // 设置加载状态
+        // 设置加载状态（会禁用输入和按钮）
         this.setLoading(true);
         
         // 发送请求
+        await this.makeRequest(message, thinkingContainer, contentArea);
+    }
+    
+    // 发送请求的逻辑（抽离出来以便复用）
+    async makeRequest(message, thinkingContainer, contentArea) {
         try {
             this.abortController = new AbortController();
             const response = await fetch(`${this.apiBase}/api/chat/stream`, {
@@ -100,7 +118,11 @@ class AnimeChatbot {
             
         } catch (e) {
             if (e.name === 'AbortError') {
+                // 用户主动停止
                 contentArea.innerHTML += '<br>[已停止]';
+            } else if (e.name === 'TypeError' && e.message.includes('fetch')) {
+                // 网络错误
+                contentArea.innerHTML += '<br><span style="color: orange;">⚠️ 连接已断开，请检查网络后重试</span>';
             } else {
                 console.error('请求错误:', e);
                 contentArea.innerHTML = `抱歉，服务暂时不可用。<br>错误信息: ${e.message}`;
@@ -110,37 +132,102 @@ class AnimeChatbot {
         // 结束加载状态
         this.setLoading(false);
         this.abortController = null;
+        
+        // 处理待发送队列中的消息
+        this.processPendingQueue();
+    }
+    
+    // 处理待发送队列
+    processPendingQueue() {
+        if (this.pendingMessages.length > 0 && !this.isLoading) {
+            const nextMessage = this.pendingMessages.shift();
+            this.updatePendingIndicator();
+            
+            // 延迟一点发送，让 UI 有时间更新
+            setTimeout(() => {
+                this.sendMessageWithContent(nextMessage);
+            }, 100);
+        }
+    }
+    
+    // 直接使用指定内容发送消息（不经过输入框）
+    sendMessageWithContent(message) {
+        if (!message) return;
+        
+        // 添加用户消息
+        this.addMessage('user', message);
+        
+        // 创建AI消息容器
+        const botMsg = this.addAssistantMessage();
+        
+        // 获取思考过程和内容区域
+        const thinkingContainer = botMsg.querySelector('.thinking-container');
+        const contentArea = botMsg.querySelector('.content-area');
+        
+        // 设置加载状态
+        this.setLoading(true);
+        
+        // 发送请求
+        this.makeRequest(message, thinkingContainer, contentArea);
+    }
+    
+    // 更新待发送提示
+    updatePendingIndicator() {
+        // 移除旧的提示
+        const oldIndicator = document.querySelector('.pending-indicator');
+        if (oldIndicator) oldIndicator.remove();
+        
+        if (this.pendingMessages.length > 0) {
+            const indicator = document.createElement('div');
+            indicator.className = 'pending-indicator';
+            indicator.style.cssText = 'position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); background: #ff9800; color: white; padding: 8px 16px; border-radius: 20px; font-size: 14px; z-index: 1000;';
+            indicator.textContent = `📝 ${this.pendingMessages.length} 条消息等待中...`;
+            document.body.appendChild(indicator);
+        }
     }
     
     async processStream(response, thinkingContainer, contentArea) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        let isAborted = false;
         
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-            
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const data = JSON.parse(line.slice(6));
-                        this.handleStreamData(data, thinkingContainer, contentArea);
-                    } catch (e) {
-                        // 忽略解析错误
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+                
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            this.handleStreamData(data, thinkingContainer, contentArea);
+                        } catch (e) {
+                            // 忽略解析错误
+                        }
                     }
                 }
             }
+        } catch (e) {
+            // 检查是否是用户主动中止
+            if (e.name === 'AbortError') {
+                isAborted = true;
+            }
+            // 其他错误（网络断开等）不显示额外的错误信息
+            // 让 makeRequest 的 catch 块统一处理
+            console.warn('流式响应中断:', e.name, e.message);
         }
         
-        // 完成后添加到历史
-        const content = contentArea.innerHTML;
-        if (content) {
-            this.messages.push({ role: 'assistant', content: content });
+        // 完成后添加到历史（只有正常完成或用户中止时才添加）
+        if (!isAborted) {
+            const content = contentArea.innerHTML;
+            if (content) {
+                this.messages.push({ role: 'assistant', content: content });
+            }
         }
     }
     

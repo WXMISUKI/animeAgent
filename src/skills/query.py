@@ -4,6 +4,8 @@
 from .base import BaseSkill, SkillInput, SkillOutput
 from ..data_sources.jikan import JikanAPI
 from ..data_sources.anilist import AniListAPI
+from ..data_sources.bangumi import BangumiAPI
+from ..data_sources.bilibili import BilibiliAPI
 from ..data_sources.router import DataSourceRouter
 from ..models.query_params import QueryParams
 
@@ -11,17 +13,25 @@ from ..models.query_params import QueryParams
 class AnimeQuerySkill(BaseSkill):
     """番剧查询 Skill
     
-    使用 Jikan API (MyAnimeList) + AniList API 获取数据
+    使用多数据源获取数据：
+    - Jikan API: MyAnimeList 数据（主要查日漫）
+    - AniList API: 全球动漫数据
+    - Bangumi API: 中文番剧数据（国漫、日漫）
+    - Bilibili API: B站数据（国漫、日漫）
+    
+    查询策略：并行查询所有数据源，合并结果后由大模型评价筛选
     """
     
     name = "query"
     description = "查询番剧列表"
     
     def __init__(self):
-        # 使用 Jikan + AniList 数据源
+        # 初始化所有数据源
         self.data_sources = [
-            JikanAPI(),    # Jikan API - MyAnimeList 数据
-            AniListAPI()  # AniList API - 全球数据
+            JikanAPI(),     # Jikan API - MyAnimeList 数据
+            AniListAPI(),  # AniList API - 全球数据
+            BangumiAPI(),  # Bangumi API - 中文数据
+            BilibiliAPI(), # Bilibili API - B站数据
         ]
         self.router = DataSourceRouter(self.data_sources)
     

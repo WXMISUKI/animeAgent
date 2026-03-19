@@ -6,10 +6,14 @@ Jikan (時間) 是一个免费的非官方 MyAnimeList API
 """
 
 import aiohttp
+import json
+import logging
 from typing import Optional
 from .base import AnimeDataSource
 from ..models.anime_info import AnimeInfo
 from ..models.query_params import QueryParams
+
+logger = logging.getLogger("JikanAPI")
 
 
 class JikanAPI(AnimeDataSource):
@@ -45,12 +49,43 @@ class JikanAPI(AnimeDataSource):
         "all": None
     }
     
+    # 中文类型映射
+    CHINESE_TYPE_MAP = {
+        "剧场版": "movie",
+        "电影": "movie",
+        "OVA": "ova",
+        "OAD": "ova",
+        "TV": "tv",
+        "动画": "tv",
+        "特别篇": "special",
+        "SP": "special",
+        "网盘": "ona",
+        "音乐": "music"
+    }
+    
     # 评分排序
     SORT_MAP = {
         "rating": "score",
         "hot": "popularity",
         "latest": "start_date"
     }
+    
+    def _parse_anime_type(self, anime_type: str) -> Optional[str]:
+        """解析动画类型，支持中文和英文"""
+        if not anime_type or anime_type == "all":
+            return None
+        
+        anime_type_lower = anime_type.lower()
+        
+        # 先尝试中文映射
+        if anime_type in self.CHINESE_TYPE_MAP:
+            return self.CHINESE_TYPE_MAP[anime_type]
+        
+        # 直接使用英文
+        if anime_type_lower in self.TYPE_MAP:
+            return anime_type_lower
+        
+        return None
     
     async def search(self, params: QueryParams) -> list[AnimeInfo]:
         """搜索番剧
@@ -59,28 +94,42 @@ class JikanAPI(AnimeDataSource):
         - 有时间范围 -> /seasons/{year}/{season}
         - 无时间范围 -> /seasons/now
         - 有关键词 -> /anime?q={keyword}
+        
+        支持 anime_type 参数过滤：剧场版、OVA、TV 等
         """
+        
+        # 解析动画类型
+        anime_type = self._parse_anime_type(params.anime_type)
         
         # 优先处理关键词搜索
         if params.keyword:
-            return await self._search_by_keyword(params)
+            return await self._search_by_keyword(params, anime_type)
         
         # 根据时间范围获取季度数据
         if params.time_range:
-            return await self._get_season(params)
+            return await self._get_season(params, anime_type)
         
         # 默认获取当前季度
-        return await self._get_current_season(params)
+        return await self._get_current_season(params, anime_type)
     
-    async def _get_current_season(self, params: QueryParams) -> list[AnimeInfo]:
-        """获取当前季度番剧"""
+    async def _get_current_season(self, params: QueryParams, anime_type: str = None) -> list[AnimeInfo]:
+        """获取当前季度番剧
+        
+        Args:
+            params: 查询参数
+            anime_type: 动画类型过滤 (tv, movie, ova, special, ona, music)
+        """
         
         try:
             async with aiohttp.ClientSession() as session:
                 # 获取当前季度
+                query_params = {"limit": 25}
+                if anime_type:
+                    query_params["type"] = anime_type
+                    
                 async with session.get(
                     f"{self.BASE_URL}/seasons/now",
-                    params={"limit": 25},
+                    params=query_params,
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as resp:
                     if resp.status != 200:
@@ -90,8 +139,9 @@ class JikanAPI(AnimeDataSource):
                     data = await resp.json()
                     items = data.get("data", [])
                     
-                    # 过滤动画
-                    items = [item for item in items if item.get("type") == "TV"]
+                    # 如果 API 不支持 type 过滤，则在结果中过滤
+                    if anime_type:
+                        items = [item for item in items if item.get("type", "").lower() == anime_type]
                     
                     # 应用排序
                     items = self._sort_results(items, params.sort_by)
@@ -102,23 +152,32 @@ class JikanAPI(AnimeDataSource):
             print(f"[JikanAPI] 获取当前季度失败: {e}")
             return []
     
-    async def _get_season(self, params: QueryParams) -> list[AnimeInfo]:
-        """获取指定年份/季度的番剧"""
+    async def _get_season(self, params: QueryParams, anime_type: str = None) -> list[AnimeInfo]:
+        """获取指定年份/季度的番剧
+        
+        Args:
+            params: 查询参数
+            anime_type: 动画类型过滤 (tv, movie, ova, special, ona, music)
+        """
         
         # 解析时间范围
         year, season = self._parse_time_range(params.time_range)
         
         if not year:
             # 无法解析，返回当前季度
-            return await self._get_current_season(params)
+            return await self._get_current_season(params, anime_type)
         
         try:
             async with aiohttp.ClientSession() as session:
                 url = f"{self.BASE_URL}/seasons/{year}/{season}"
                 
+                query_params = {"limit": 25}
+                if anime_type:
+                    query_params["type"] = anime_type
+                    
                 async with session.get(
                     url,
-                    params={"limit": 25},
+                    params=query_params,
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as resp:
                     if resp.status != 200:
@@ -127,6 +186,10 @@ class JikanAPI(AnimeDataSource):
                     
                     data = await resp.json()
                     items = data.get("data", [])
+                    
+                    # 如果 API 不支持 type 过滤，则在结果中过滤
+                    if anime_type:
+                        items = [item for item in items if item.get("type", "").lower() == anime_type]
                     
                     # 应用排序
                     items = self._sort_results(items, params.sort_by)
@@ -137,8 +200,13 @@ class JikanAPI(AnimeDataSource):
             print(f"[JikanAPI] 获取季度失败: {e}")
             return []
     
-    async def _search_by_keyword(self, params: QueryParams) -> list[AnimeInfo]:
-        """通过关键词搜索番剧"""
+    async def _search_by_keyword(self, params: QueryParams, anime_type: str = None) -> list[AnimeInfo]:
+        """通过关键词搜索番剧
+        
+        Args:
+            params: 查询参数
+            anime_type: 动画类型过滤 (tv, movie, ova, special, ona, music)
+        """
         
         keyword = params.keyword or params.time_range or "anime"
         
@@ -147,8 +215,9 @@ class JikanAPI(AnimeDataSource):
                 query_params = {
                     "q": keyword,
                     "limit": 20,
-                    "type": "tv"
                 }
+                if anime_type:
+                    query_params["type"] = anime_type
                 
                 async with session.get(
                     f"{self.BASE_URL}/anime",
@@ -160,6 +229,10 @@ class JikanAPI(AnimeDataSource):
                     
                     data = await resp.json()
                     items = data.get("data", [])
+                    
+                    # 如果 API 不支持 type 过滤，则在结果中过滤
+                    if anime_type:
+                        items = [item for item in items if item.get("type", "").lower() == anime_type]
                     
                     return [self._parse_anime(item) for item in items]
                     

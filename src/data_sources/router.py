@@ -84,14 +84,21 @@ class DataSourceRouter:
         "jikan": ["Jikan"],
         "anilist": ["AniList"],
         "bangumi": ["Bangumi"],
-        "all": ["Jikan", "AniList"],  # 默认查询 Jikan + AniList
+        "bilibili": ["Bilibili"],
+        # 默认查询所有数据源
+        "all": ["Jikan", "AniList", "Bangumi", "Bilibili"],
     }
+    
+    # 国漫专用数据源
+    CHINESE_ANIME_SOURCES = ["Bangumi", "Bilibili"]
     
     # 平台别名（兼容旧版本）
     ALIAS_MAP = {
-        "bilibili": "all",
+        "bilibili": "bilibili",
         "iqiyi": "all",
         "tencent": "all",
+        "youku": "all",
+        "芒果": "all",
     }
     
     def __init__(
@@ -115,7 +122,7 @@ class DataSourceRouter:
         """查询数据源
         
         流程：
-        1. 选择数据源（根据平台参数 + 熔断状态）
+        1. 选择数据源（根据平台参数 + anime_type + 熔断状态）
         2. 并行查询（带超时和重试）
         3. 合并结果并去重
         4. 结果校验
@@ -127,6 +134,11 @@ class DataSourceRouter:
         
         # 获取要查询的数据源列表
         source_names = self.PLATFORM_MAP.get(platform, self.PLATFORM_MAP["all"])
+        
+        # 国漫特殊处理：anime_type 为"国漫"时，优先使用 Bangumi 和 Bilibili
+        if params.anime_type in ["国漫", "国产", "国创"]:
+            source_names = self.CHINESE_ANIME_SOURCES
+            logger.info(f"🎯 检测到国漫查询，使用数据源: {source_names}")
         
         # 过滤出可用的数据源
         sources_to_query = []
@@ -142,6 +154,8 @@ class DataSourceRouter:
                 continue
             
             sources_to_query.append(self.source_map[name])
+        
+        logger.info(f"🔍 将查询数据源: {[s.NAME for s in sources_to_query]}")
         
         # 如果所有数据源都不可用，记录警告
         if not sources_to_query and unavailable_sources:
