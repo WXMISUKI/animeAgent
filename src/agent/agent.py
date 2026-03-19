@@ -19,6 +19,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from .tools import create_tools
 from ..utils.logger import chat_logger
 
+# 导入意图解析模块（解耦后的新模块）
+from .intent import IntentParser, IntentType, SlotDefinition
+
 # 导入会话管理（新增）
 try:
     from ..infrastructure.cache import get_session_manager
@@ -43,196 +46,16 @@ logging.basicConfig(
 logger = logging.getLogger("AnimeAgent")
 
 
-# ==================== 意图类型定义 ====================
-
-class IntentType:
-    """意图类型常量"""
-    GREETING = "greeting"           # 打招呼
-    CAPABILITY = "capability"       # 询问能力
-    QUERY = "query"                 # 番剧查询
-    DETAIL = "detail"               # 番剧详情
-    RANKING = "ranking"             # 排行榜
-    RECOMMEND = "recommend"         # 推荐
-    COMPARE = "compare"             # 对比
-    THANKS = "thanks"               # 感谢
-    CHAT = "chat"                   # 闲聊
-
-
-# ==================== 槽位定义 ====================
-
-class SlotDefinition:
-    """槽位定义 - 用于参数校验和反问"""
-    
-    # 槽位定义字典
-    DEFINITIONS = {
-        "time_range": {
-            "type": "string",
-            "required": False,
-            "description": "时间范围",
-            "examples": ["2026-03", "本月", "最新", "2026春", "2024年7月"],
-            "validate": lambda x: _validate_time_range(x) if x else True
-        },
-        "platform": {
-            "type": "string",
-            "required": False,
-            "description": "平台",
-            "enum": ["jikan", "anilist", "bangumi", "all"],
-            "default": "all"
-        },
-        "anime_type": {
-            "type": "string",
-            "required": False,
-            "description": "番剧类型",
-            "enum": ["日漫", "国漫", "美漫", "剧场版", "all"],
-            "default": "all"
-        },
-        "sort_by": {
-            "type": "string",
-            "required": False,
-            "description": "排序方式",
-            "enum": ["latest", "hot", "rating"],
-            "default": "rating"
-        },
-        "keyword": {
-            "type": "string",
-            "required": False,
-            "description": "关键词搜索"
-        },
-        "anime_id": {
-            "type": "string",
-            "required": False,
-            "description": "番剧ID"
-        }
-    }
-    
-    # 意图必需的槽位
-    REQUIRED_SLOTS = {
-        IntentType.DETAIL: ["keyword", "anime_id"],  # 详情需要关键词或ID
-        IntentType.QUERY: [],  # 查询可选
-        IntentType.RANKING: [],  # 排行榜可选
-    }
-
-
-def _validate_time_range(value: str) -> bool:
-    """验证时间范围格式"""
-    import re
-    # 简单验证：年份+月份、季节、本月、最新等
-    patterns = [
-        r"^\d{4}-\d{2}$",  # 2026-03
-        r"^\d{4}年\d{1,2}月$",  # 2026年3月
-        r"^\d{4}春|夏|秋|冬$",  # 2026春
-        r"^本月$",
-        r"^最新$",
-        r"^最近$"
-    ]
-    return any(re.match(p, value) for p in patterns)
-
-
 # ==================== 意图解析器 ====================
 
-class IntentParser:
-    """意图解析器
-    
-    负责分析用户问题，提取关键信息：
-    - 意图类型
-    - 查询参数（时间、平台、类型、关键词等）
-    """
-    
-    # 意图关键词映射
-    INTENT_KEYWORDS = {
-        IntentType.GREETING: ["你好", "hi", "hello", "嗨", "早上好", "晚安", "在吗"],
-        IntentType.CAPABILITY: ["功能", "能做什么", "有什么用", "你可以"],
-        IntentType.THANKS: ["谢谢", "感谢", "好的"],
-        IntentType.QUERY: ["查询", "搜索", "找找", "有哪些", "有什么", "推荐"],
-        IntentType.RANKING: ["排行", "排名", "top", "最火", "最热", "最高分"],
-        IntentType.DETAIL: ["详情", "介绍", "讲什么", "剧情", "怎么样"]
-    }
-    
-    # 时间关键词映射
-    TIME_KEYWORDS = {
-        "本月": "本月",
-        "最新": "最新",
-        "最近": "最新",
-        "春季": "春",
-        "夏季": "夏",
-        "秋季": "秋",
-        "冬季": "冬"
-    }
-    
-    def __init__(self, llm: ChatOpenAI):
-        self.llm = llm
-    
-    def validate_slots(self, intent: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """校验槽位并返回校验结果
-        
-        Returns:
-            {
-                "valid": True/False,
-                "errors": ["错误信息"],
-                "missing_slots": ["缺失的必需槽位"],
-                "corrected_params": 纠正后的参数
-            }
-        """
-        errors = []
-        missing_slots = []
-        corrected_params = params.copy()
-        
-        # 获取意图必需的槽位
-        required = SlotDefinition.REQUIRED_SLOTS.get(intent, [])
-        
-        # 检查必需槽位
-        for slot_name in required:
-            if slot_name not in params or not params.get(slot_name):
-                missing_slots.append(slot_name)
-        
-        # 校验各槽位
-        for slot_name, value in params.items():
-            if slot_name in SlotDefinition.DEFINITIONS:
-                slot_def = SlotDefinition.DEFINITIONS[slot_name]
-                
-                # 枚举校验
-                if "enum" in slot_def and value:
-                    if value not in slot_def["enum"]:
-                        errors.append(f"{slot_def['description']} '{value}' 不在可选值 {slot_def['enum']} 中")
-                        # 纠正为默认值
-                        corrected_params[slot_name] = slot_def.get("default", "all")
-                
-                # 自定义校验
-                if "validate" in slot_def and value:
-                    if not slot_def["validate"](value):
-                        errors.append(f"{slot_def['description']} '{value}' 格式不正确")
-        
-        # 返回校验结果
-        return {
-            "valid": len(errors) == 0 and len(missing_slots) == 0,
-            "errors": errors,
-            "missing_slots": missing_slots,
-            "corrected_params": corrected_params
-        }
-    
-    def generate_clarification_question(self, missing_slots: List[str], params: Dict[str, Any]) -> str:
-        """生成澄清问题
-        
-        根据缺失的槽位生成反问用户的问题
-        """
-        questions = []
-        
-        for slot in missing_slots:
-            if slot == "keyword" or slot == "anime_id":
-                questions.append("请告诉我你想查询的番剧名称")
-            elif slot == "time_range":
-                questions.append("你想查询哪个时间段的番剧？如2026年3月、本月、最新的等")
-            elif slot == "platform":
-                questions.append("你想在哪个平台查看？如B站、Bangumi等")
-            elif slot == "anime_type":
-                questions.append("你想看什么类型的番剧？如日漫、国漫、剧场版等")
-        
-        if questions:
-            return "，" .join(questions)
-        return ""
-    
-    async def parse(self, user_input: str, context_text: str = "") -> Dict[str, Any]:
-        """解析用户意图
+# 注意：IntentParser 类已移至 src/agent/intent/parser.py
+# 从模块导入: from .intent import IntentParser, IntentType, SlotDefinition
+
+
+# ==================== 计划生成器 ====================
+
+class Planner:
+        """解析用户意图（增强版 - 带规则兜底）
         
         Args:
             user_input: 用户输入
@@ -263,10 +86,27 @@ class IntentParser:
                 "direct_response": self._get_direct_response(intent)
             }
         
-        # 3. 使用LLM提取查询参数（传入上下文）
+        # 3. 使用LLM提取查询参数（增强版 - 带Few-Shot）
         params = await self._extract_params(user_input, intent, context_text)
         
-        # 4. 判断是否需要获取数据
+        # 4. 规则兜底：如果LLM提取失败或anime_type为空，使用规则匹配
+        if not params or not params.get("anime_type") or params.get("anime_type") == "all":
+            logger.info(f"⚠️ [IntentParser] LLM参数提取不完整，使用规则兜底")
+            rule_params = self._rule_based_extract(user_input)
+            # 合并参数：LLM结果优先，但用规则结果补充缺失字段
+            if params:
+                for key, value in rule_params.items():
+                    if not params.get(key) or params.get(key) == "all":
+                        params[key] = value
+            else:
+                params = rule_params
+        
+        # 5. 参数校验和纠正
+        params = self._validate_and_correct_params(params)
+        
+        logger.info(f"🎯 [IntentParser] 最终参数: {params}")
+        
+        # 6. 判断是否需要获取数据
         needs_data = intent in [IntentType.QUERY, IntentType.DETAIL, IntentType.RANKING]
         
         return {
@@ -293,7 +133,7 @@ class IntentParser:
         intent: str, 
         context_text: str = ""
     ) -> Dict[str, Any]:
-        """使用LLM提取查询参数（非流式）
+        """使用LLM提取查询参数（增强版 - 带Few-Shot）
         
         Args:
             user_input: 用户输入
@@ -309,26 +149,89 @@ class IntentParser:
 
 注意：如果用户问题很简短（如"这些的评分呢？"），请结合历史上下文推断参数！"""
         
+        # 增强版Prompt - 包含Few-Shot示例
         prompt = f"""分析用户问题，提取查询参数。
 
-用户问题: {user_input}
+## 意图类型
+- query: 查询番剧列表，如"最近有什么番剧推荐"
+- detail: 获取番剧详情，如"这部番剧讲了什么"
+- ranking: 查看排行榜，如"评分最高的番剧有哪些"
+
+## 参数提取规则
+### anime_type（番剧类型）- 必填参数！
+- "国漫"、"国产动画"、"国产动漫" → 设置为 "国漫"
+- "日漫"、"日本动画" → 设置为 "日漫"
+- "剧场版"、"电影版"、"动画电影" → 设置为 "剧场版"
+- "OVA"、"OAD" → 设置为 "OVA"
+- 没有提到任何类型 → 设置为 "all"
+
+### time_range（时间范围）
+- "2026-03"、"2026年3月" → "2026-03"
+- "本月"、"这个月" → "本月"
+- "最新"、"最近" → "最新"
+- "2026春"、"春季" → "2026春"
+
+### sort_by（排序方式）
+- "最热"、"热门"、"火" → "hot"
+- "最新"、"新番" → "latest"
+- "评分"、"高分"、"推荐" → "rating"
+
+## Few-Shot示例
+【示例1】
+输入: "推荐几部国漫"
+思考: 用户明确提到"国漫"，anime_type必须设为"国漫"
+输出: {{"anime_type": "国漫", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
+
+【示例2】
+输入: "2024年7月有哪些日漫"
+思考: 用户提到"2024年7月"表示时间，"日漫"表示类型
+输出: {{"anime_type": "日漫", "time_range": "2024-07", "sort_by": "rating", "platform": "all", "keyword": ""}}
+
+【示例3】
+输入: "剧场版电影有哪些"
+思考: 用户提到"剧场版"和"电影"
+输出: {{"anime_type": "剧场版", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
+
+【示例4】
+输入: "有什么番剧推荐"
+思考: 用户没有提到任何类型，使用默认值
+输出: {{"anime_type": "all", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
+
+【示例5】
+输入: "本月最新的热门番剧"
+思考: 用户提到"本月"和时间，"热门"表示sort_by为hot
+输出: {{"anime_type": "all", "time_range": "本月", "sort_by": "hot", "platform": "all", "keyword": ""}}
+
+【示例6 - 模糊场景】
+输入: "最近火的国产动画"
+思考: "国产动画"=国漫，"最近"=最新，"火"=hot
+输出: {{"anime_type": "国漫", "time_range": "最新", "sort_by": "hot", "platform": "all", "keyword": ""}}
+
+## Few-Shot示例（反例 - 常见错误请避免）
+【反例1】
+输入: "我想看动漫电影"
+思考: "电影"应纠正为"剧场版"，不是"电影"
+错误输出: {{"anime_type": "电影", ...}}
+正确输出: {{"anime_type": "剧场版", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
+
+【反例2】
+输入: "2024年的新番"
+思考: "新番"需要结合当前时间判断具体季度，"2024年"只是年份
+错误输出: {{"time_range": "2024", ...}}
+正确输出: {{"anime_type": "all", "sort_by": "latest", "platform": "all", "time_range": "2024", "keyword": ""}}
+
+【反例3】
+输入: "日本动漫"
+思考: "日本动漫"应该识别为"日漫"
+错误输出: {{"anime_type": "日本动漫", ...}}
+正确输出: {{"anime_type": "日漫", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
+
+## 用户问题
+{user_input}
 意图类型: {intent}{context_hint}
 
-重要规则：
-- 如果用户提到"国漫"、"国产动画"、"国产动漫"，必须设置 anime_type = "国漫"
-- 如果用户提到"日漫"、"日本动画"，设置 anime_type = "日漫"
-- 如果用户提到"剧场版"、"电影"，设置 anime_type = "剧场版"
-
-请输出JSON格式的参数：
-{{
-    "time_range": "时间范围，如'2026-03'、'本月'、'最新'、'2026春'（可选）",
-    "platform": "平台选择：'all'默认，'jikan'、'bangumi'、'bilibili'（可选）",
-    "anime_type": "类型：必填！'all'默认，'日漫'、'国漫'、'剧场版'",
-    "sort_by": "排序：'rating'评分，'hot'热门，'latest'最新（可选）",
-    "keyword": "关键词搜索（可选）"
-}}
-
-只输出JSON，不要其他内容："""
+## 输出要求
+只输出JSON格式，不要其他任何内容："""
         
         messages = [
             SystemMessage(content=prompt),
@@ -360,7 +263,7 @@ class IntentParser:
         intent: str,
         context_text: str = ""
     ):
-        """使用LLM流式提取查询参数 - 每次 LLM 输出 chunk 时立即 yield
+        """使用LLM流式提取查询参数 - 每次 LLM 输出 chunk 时立即 yield（增强版）
         
         Args:
             user_input: 用户输入
@@ -376,26 +279,89 @@ class IntentParser:
 
 注意：如果用户问题很简短（如"这些的评分呢？"），请结合历史上下文推断参数！"""
         
+        # 增强版Prompt - 包含Few-Shot示例
         prompt = f"""分析用户问题，提取查询参数。
 
-用户问题: {user_input}
+## 意图类型
+- query: 查询番剧列表，如"最近有什么番剧推荐"
+- detail: 获取番剧详情，如"这部番剧讲了什么"
+- ranking: 查看排行榜，如"评分最高的番剧有哪些"
+
+## 参数提取规则
+### anime_type（番剧类型）- 必填参数！
+- "国漫"、"国产动画"、"国产动漫" → 设置为 "国漫"
+- "日漫"、"日本动画" → 设置为 "日漫"
+- "剧场版"、"电影版"、"动画电影" → 设置为 "剧场版"
+- "OVA"、"OAD" → 设置为 "OVA"
+- 没有提到任何类型 → 设置为 "all"
+
+### time_range（时间范围）
+- "2026-03"、"2026年3月" → "2026-03"
+- "本月"、"这个月" → "本月"
+- "最新"、"最近" → "最新"
+- "2026春"、"春季" → "2026春"
+
+### sort_by（排序方式）
+- "最热"、"热门"、"火" → "hot"
+- "最新"、"新番" → "latest"
+- "评分"、"高分"、"推荐" → "rating"
+
+## Few-Shot示例
+【示例1】
+输入: "推荐几部国漫"
+思考: 用户明确提到"国漫"，anime_type必须设为"国漫"
+输出: {{"anime_type": "国漫", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
+
+【示例2】
+输入: "2024年7月有哪些日漫"
+思考: 用户提到"2024年7月"表示时间，"日漫"表示类型
+输出: {{"anime_type": "日漫", "time_range": "2024-07", "sort_by": "rating", "platform": "all", "keyword": ""}}
+
+【示例3】
+输入: "剧场版电影有哪些"
+思考: 用户提到"剧场版"和"电影"
+输出: {{"anime_type": "剧场版", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
+
+【示例4】
+输入: "有什么番剧推荐"
+思考: 用户没有提到任何类型，使用默认值
+输出: {{"anime_type": "all", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
+
+【示例5】
+输入: "本月最新的热门番剧"
+思考: 用户提到"本月"和时间，"热门"表示sort_by为hot
+输出: {{"anime_type": "all", "time_range": "本月", "sort_by": "hot", "platform": "all", "keyword": ""}}
+
+【示例6 - 模糊场景】
+输入: "最近火的国产动画"
+思考: "国产动画"=国漫，"最近"=最新，"火"=hot
+输出: {{"anime_type": "国漫", "time_range": "最新", "sort_by": "hot", "platform": "all", "keyword": ""}}
+
+## Few-Shot示例（反例 - 常见错误请避免）
+【反例1】
+输入: "我想看动漫电影"
+思考: "电影"应纠正为"剧场版"，不是"电影"
+错误输出: {{"anime_type": "电影", ...}}
+正确输出: {{"anime_type": "剧场版", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
+
+【反例2】
+输入: "2024年的新番"
+思考: "新番"需要结合当前时间判断具体季度
+错误输出: {{"time_range": "2024", ...}}
+正确输出: {{"anime_type": "all", "sort_by": "latest", "platform": "all", "time_range": "2024", "keyword": ""}}
+
+【反例3】
+输入: "日本动漫"
+思考: "日本动漫"应该识别为"日漫"
+错误输出: {{"anime_type": "日本动漫", ...}}
+正确输出: {{"anime_type": "日漫", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
+
+## 用户问题
+{user_input}
 意图类型: {intent}{context_hint}
 
-重要规则：
-- 如果用户提到"国漫"、"国产动画"、"国产动漫"，必须设置 anime_type = "国漫"
-- 如果用户提到"日漫"、"日本动画"，设置 anime_type = "日漫"
-- 如果用户提到"剧场版"、"电影"，设置 anime_type = "剧场版"
-
-请输出JSON格式的参数：
-{{
-    "time_range": "时间范围，如'2026-03'、'本月'、'最新'、'2026春'（可选）",
-    "platform": "平台选择：'all'默认，'jikan'、'bangumi'、'bilibili'（可选）",
-    "anime_type": "类型：必填！'all'默认，'日漫'、'国漫'、'剧场版'",
-    "sort_by": "排序：'rating'评分，'hot'热门，'latest'最新（可选）",
-    "keyword": "关键词搜索（可选）"
-}}
-
-只输出JSON，不要其他内容："""
+## 输出要求
+只输出JSON格式，不要其他任何内容："""
         
         messages = [
             SystemMessage(content=prompt),
@@ -432,6 +398,162 @@ class IntentParser:
                 except:
                     pass
         return {}
+    
+    def _rule_based_extract(self, user_input: str) -> Dict[str, Any]:
+        """基于规则的参数提取（兜底方案）
+        
+        当LLM提取失败时，使用关键词匹配作为兜底
+        支持同义词映射和自动纠正
+        """
+        params = {
+            "anime_type": "all",
+            "time_range": "",
+            "platform": "all",
+            "sort_by": "rating",
+            "keyword": ""
+        }
+        
+        # ========== 同义词映射表 ==========
+        # 番剧类型同义词
+        anime_type_synonyms = {
+            "国漫": ["国漫", "国产", "国创", "中国动画", "国产动漫", "国产番", "国动"],
+            "日漫": ["日漫", "日本动画", "日本动漫", "日本番", "日番", "日本动画"],
+            "剧场版": ["剧场版", "电影版", "动画电影", "动漫电影", "电影", "动漫电影"],
+            "OVA": ["OVA", "OAD", "OVA动画"]
+        }
+        
+        # 排序方式同义词
+        sort_by_synonyms = {
+            "hot": ["最热", "热门", "火", "热度", "最火", "人气", "火爆"],
+            "latest": ["最新", "新番", "刚出", "上新", "最近", "最近更新"],
+            "rating": ["评分", "高分", "推荐", "评分高", "口碑好", "评价好", "最高分"]
+        }
+        
+        # 时间范围同义词
+        time_synonyms = {
+            "本月": ["本月", "这个月", "当月"],
+            "最新": ["最新", "最近", "新番", "刚出", "刚更新"],
+            "春": ["春季", "春番", "春天", "2026春"],
+            "夏": ["夏季", "夏番", "夏天", "2026夏"],
+            "秋": ["秋季", "秋番", "秋天", "2026秋"],
+            "冬": ["冬季", "冬番", "冬天", "2026冬"]
+        }
+        
+        # 检测番剧类型关键词（同义词匹配）
+        for type_name, synonyms in anime_type_synonyms.items():
+            if any(kw in user_input for kw in synonyms):
+                params["anime_type"] = type_name
+                logger.info(f"📝 [IntentParser] 规则兜底检测到类型: {type_name}")
+                break
+        
+        # 检测时间范围关键词（同义词匹配）
+        import re
+        time_patterns = [
+            # 精确格式：2026-03, 2024年7月
+            (r"(\d{4})-(\d{2})", lambda m: f"{m.group(1)}-{m.group(2)}"),
+            (r"(\d{4})年(\d{1,2})月", lambda m: f"{m.group(1)}-{int(m.group(2)):02d}"),
+        ]
+        
+        # 先匹配精确时间格式
+        for pattern, extractor in time_patterns:
+            match = re.search(pattern, user_input)
+            if match:
+                params["time_range"] = extractor(match)
+                logger.info(f"📝 [IntentParser] 规则兜底检测到时间: {params['time_range']}")
+                break
+        
+        # 如果没有精确匹配，尝试同义词
+        if not params["time_range"]:
+            for time_name, synonyms in time_synonyms.items():
+                if any(kw in user_input for kw in synonyms):
+                    # 尝试提取年份
+                    year_match = re.search(r"(\d{4})", user_input)
+                    if year_match:
+                        params["time_range"] = f"{year_match.group(1)}{time_name}"
+                    else:
+                        params["time_range"] = time_name
+                    logger.info(f"📝 [IntentParser] 规则兜底检测到时间: {params['time_range']}")
+                    break
+        
+        # 检测排序关键词（同义词匹配）
+        for sort_name, synonyms in sort_by_synonyms.items():
+            if any(kw in user_input for kw in synonyms):
+                params["sort_by"] = sort_name
+                logger.info(f"📝 [IntentParser] 规则兜底检测到排序: {sort_name}")
+                break
+        
+        # 检测平台关键词
+        if "bangumi" in user_input.lower() or "番组" in user_input:
+            params["platform"] = "bangumi"
+        elif "b站" in user_input or "bilibili" in user_input.lower():
+            params["platform"] = "bilibili"
+        
+        logger.info(f"📝 [IntentParser] 规则兜底提取的参数: {params}")
+        return params
+    
+    def _validate_and_correct_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """参数校验和纠正（增强版）
+        
+        确保参数值在合法范围内，防止非法值传播
+        支持自动纠正：将用户口语化表述自动转换为标准参数值
+        """
+        if not params:
+            return params
+        
+        # 枚举值定义
+        valid_platforms = ["jikan", "anilist", "bangumi", "bilibili", "all"]
+        valid_types = ["日漫", "国漫", "剧场版", "OVA", "all"]
+        valid_sorts = ["rating", "hot", "latest"]
+        
+        # ========== 自动纠正逻辑 ==========
+        # anime_type 自动纠正映射
+        type_correction_map = {
+            "电影": "剧场版",
+            "动漫电影": "剧场版",
+            "动画": "all",
+            "番": "all",
+            "番剧": "all",
+            "日本": "日漫",
+            "国产": "国漫",
+        }
+        
+        # 检测 anime_type 是否需要自动纠正
+        current_type = params.get("anime_type", "")
+        if current_type in type_correction_map:
+            old_value = current_type
+            params["anime_type"] = type_correction_map[current_type]
+            logger.info(f"🔧 [IntentParser] anime_type 自动纠正: '{old_value}' → '{params['anime_type']}'")
+        
+        # time_range 格式归一化
+        time_str = params.get("time_range", "")
+        if time_str:
+            # 处理 "2024年7月" -> "2024-07" 格式
+            import re
+            year_month_match = re.match(r"(\d{4})年(\d{1,2})月", time_str)
+            if year_month_match:
+                params["time_range"] = f"{year_month_match.group(1)}-{int(year_month_match.group(2)):02d}"
+                logger.info(f"🔧 [IntentParser] time_range 格式归一化: {time_str} → {params['time_range']}")
+        
+        # ========== 枚举值校验 ==========
+        # 校验并纠正 anime_type
+        if params.get("anime_type") not in valid_types:
+            old_value = params.get("anime_type")
+            params["anime_type"] = "all"
+            logger.warning(f"⚠️ [IntentParser] anime_type 非法值 '{old_value}' 已纠正为 'all'")
+        
+        # 校验并纠正 platform
+        if params.get("platform") not in valid_platforms:
+            old_value = params.get("platform")
+            params["platform"] = "all"
+            logger.warning(f"⚠️ [IntentParser] platform 非法值 '{old_value}' 已纠正为 'all'")
+        
+        # 校验并纠正 sort_by
+        if params.get("sort_by") not in valid_sorts:
+            old_value = params.get("sort_by")
+            params["sort_by"] = "rating"
+            logger.warning(f"⚠️ [IntentParser] sort_by 非法值 '{old_value}' 已纠正为 'rating'")
+        
+        return params
     
     def _get_direct_response(self, intent: str) -> str:
         """获取直接回复"""
@@ -936,6 +1058,21 @@ class AnimeAgent:
                     params = json.loads(json_match.group())
             except:
                 pass
+        
+        # 规则兜底：如果LLM提取失败或anime_type为空，使用规则匹配
+        if not params or not params.get("anime_type") or params.get("anime_type") == "all":
+            logger.info(f"⚠️ [IntentParser] 流式LLM参数提取不完整，使用规则兜底")
+            rule_params = self.intent_parser._rule_based_extract(user_input)
+            # 合并参数
+            if params:
+                for key, value in rule_params.items():
+                    if not params.get(key) or params.get(key) == "all":
+                        params[key] = value
+            else:
+                params = rule_params
+        
+        # 参数校验和纠正
+        params = self.intent_parser._validate_and_correct_params(params)
         
         self._log(f"🎯 意图识别: {intent}, 参数: {params}")
         
