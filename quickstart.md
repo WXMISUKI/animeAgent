@@ -1,5 +1,5 @@
 # 番剧智能体 - 快速启动指南
-
+当前项目开发环境我们有自己的开发环境，直接执行conda activate langgraph-env
 ## 项目简介
 
 基于 MiniMax M2.5 模型的番剧信息查询智能体，提供 Web 界面和 API 接口。

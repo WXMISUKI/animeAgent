@@ -38,6 +38,13 @@ except ImportError:
     CONFIG_AVAILABLE = False
     settings = None
 
+# 导入追踪模块
+try:
+    from ..infrastructure.tracing import get_tracer, create_tracing_context
+    TRACING_AVAILABLE = True
+except ImportError:
+    TRACING_AVAILABLE = False
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -484,7 +491,8 @@ class AnimeAgent:
         user_input: str, 
         chat_history: list = None,
         session_id: str = None,
-        user_id: str = "default"
+        user_id: str = "default",
+        trace_id: str = None
     ):
         """运行智能体（增量流式输出）- 支持会话上下文
         
@@ -498,6 +506,7 @@ class AnimeAgent:
             chat_history: 聊天历史（兼容旧接口）
             session_id: 会话 ID（可选）
             user_id: 用户 ID（可选）
+            trace_id: 追踪 ID（用于链路追踪）
         """
         # 获取或创建会话
         session = None
@@ -828,7 +837,8 @@ async def run_agent_streaming(
     user_input: str, 
     chat_history: list = None,
     session_id: str = None,
-    user_id: str = "default"
+    user_id: str = "default",
+    trace_id: str = None
 ):
     """运行Agent（流式输出）
     
@@ -837,9 +847,10 @@ async def run_agent_streaming(
         chat_history: 聊天历史（兼容旧接口）
         session_id: 会话 ID（支持多轮对话）
         user_id: 用户 ID
+        trace_id: 追踪 ID（用于链路追踪）
     """
     agent = get_agent()
-    async for chunk in agent.run_streaming(user_input, chat_history, session_id, user_id):
+    async for chunk in agent.run_streaming(user_input, chat_history, session_id, user_id, trace_id):
         yield chunk
 
 
