@@ -149,6 +149,11 @@ async def chat_stream(request: QueryRequest):
     """流式对话接口（SSE）- 增量流式输出
     
     支持多轮对话，通过 session_id 保持会话上下文
+    
+    错误处理策略：
+    1. 每个步骤都有独立的 try-except
+    2. 任何异常都会发送错误消息给前端
+    3. 确保流式响应不会因异常而中断
     """
     
     # 记录请求开始
@@ -159,10 +164,15 @@ async def chat_stream(request: QueryRequest):
 
     async def generate():
         chunk_count = 0
+        error_occurred = False
+        
         # 首次返回 session_id
         yield f"data: {json.dumps({'type': 'session', 'session_id': request.session_id}, ensure_ascii=False)}\n\n"
         
         try:
+            # 步骤0: 准备阶段
+            yield f"data: {json.dumps({'type': 'status', 'status': 'preparing', 'delta': '正在准备...' }, ensure_ascii=False)}\n\n"
+            
             async for chunk in run_agent_streaming(
                 user_input=request.query,
                 session_id=request.session_id,
@@ -175,8 +185,17 @@ async def chat_stream(request: QueryRequest):
                 # 记录每个chunk
                 api_logger.info(f"📤 发送chunk {chunk_count}: type={chunk_type}, status={chunk_status}")
                 
-                # 直接转发所有增量数据
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                try:
+                    # 直接转发所有增量数据
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    api_logger.error(f"❌ 发送chunk失败: {e}")
+                    # 尝试发送错误消息
+                    try:
+                        yield f"data: {json.dumps({'type': 'error', 'content': f'发送数据失败: {str(e)}'}, ensure_ascii=False)}\n\n"
+                    except:
+                        pass
+                    continue
                 
                 # 记录关键节点日志
                 if chunk_type == "intent" and chunk_status == "done":
@@ -201,9 +220,49 @@ async def chat_stream(request: QueryRequest):
 
             api_logger.info(f"📊 流式响应结束 | 共 {chunk_count} 个chunk")
 
+        except asyncio.CancelledError:
+            # 用户主动断开连接
+            api_logger.warning(f"⚠️ 流式响应被客户端取消")
+            error_occurred = True
+            try:
+                yield f"data: {json.dumps({'type': 'error', 'content': '连接已断开'}, ensure_ascii=False)}\n\n"
+            except:
+                pass
+                
         except Exception as e:
             api_logger.error(f"❌ 对话异常: {str(e)}", exc_info=True)
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+            error_occurred = True
+            try:
+                # 发送友好的错误消息
+                error_message = _get_user_friendly_error(str(e))
+                yield f"data: {json.dumps({'type': 'error', 'content': error_message}, ensure_ascii=False)}\n\n"
+            except Exception as e2:
+                api_logger.error(f"❌ 发送错误消息也失败了: {e2}")
+        
+        finally:
+            # 发送完成信号
+            if not error_occurred:
+                try:
+                    yield f"data: {json.dumps({'type': 'done', 'chunk_count': chunk_count}, ensure_ascii=False)}\n\n"
+                except:
+                    pass
+
+    def _get_user_friendly_error(error_str: str) -> str:
+        """将技术错误转换为用户友好的错误消息"""
+        error_lower = error_str.lower()
+        
+        if "timeout" in error_lower or "timed out" in error_lower:
+            return "请求超时了，请稍后重试。"
+        elif "connection" in error_lower or "connect" in error_lower:
+            return "网络连接不稳定，请检查网络后重试。"
+        elif "api" in error_lower and "key" in error_lower:
+            return "服务配置问题，请联系管理员。"
+        elif "rate limit" in error_lower or "限流" in error_lower:
+            return "请求过于频繁，请稍后再试。"
+        elif "no such file" in error_lower or "not found" in error_lower:
+            return "服务暂时不可用，请稍后重试。"
+        else:
+            return f"服务出现了一些问题，请稍后重试。"
 
     return StreamingResponse(
         generate(),

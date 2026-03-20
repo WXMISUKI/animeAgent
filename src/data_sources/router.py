@@ -174,6 +174,16 @@ class DataSourceRouter:
         # 并行查询所有选中的数据源
         results = await self._fetch_all(sources_to_query, params)
         
+        # 打印每个数据源的返回数据（增强日志）
+        for i, result_list in enumerate(results):
+            if i < len(sources_to_query):
+                source_name = sources_to_query[i].NAME
+                logger.info(f"📦 [Router] 数据源 {source_name} 返回了 {len(result_list)} 条数据:")
+                for j, anime in enumerate(result_list[:5]):  # 只打印前5条
+                    logger.info(f"   [{j+1}] {anime.name} | 评分: {anime.rating} | ID: {anime.id}")
+                if len(result_list) > 5:
+                    logger.info(f"   ... 还有 {len(result_list) - 5} 条数据")
+        
         # 合并结果并去重
         merged = self._merge_results(results)
         

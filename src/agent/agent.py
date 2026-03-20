@@ -54,523 +54,6 @@ logger = logging.getLogger("AnimeAgent")
 
 # ==================== 计划生成器 ====================
 
-class Planner:
-        """解析用户意图（增强版 - 带规则兜底）
-        
-        Args:
-            user_input: 用户输入
-            context_text: 会话上下文文本
-            
-        Returns:
-            {
-                "intent": "query",
-                "params": {
-                    "time_range": "2026-03",
-                    "platform": "all",
-                    "anime_type": "all",
-                    "keyword": "xxx"
-                },
-                "needs_data": True,
-                "direct_response": None
-            }
-        """
-        # 1. 快速关键词匹配
-        intent = self._quick_match(user_input)
-        
-        # 2. 如果是直接回复类型，直接返回
-        if intent in [IntentType.GREETING, IntentType.CAPABILITY, IntentType.THANKS]:
-            return {
-                "intent": intent,
-                "params": {},
-                "needs_data": False,
-                "direct_response": self._get_direct_response(intent)
-            }
-        
-        # 3. 使用LLM提取查询参数（增强版 - 带Few-Shot）
-        params = await self._extract_params(user_input, intent, context_text)
-        
-        # 4. 规则兜底：如果LLM提取失败或anime_type为空，使用规则匹配
-        if not params or not params.get("anime_type") or params.get("anime_type") == "all":
-            logger.info(f"⚠️ [IntentParser] LLM参数提取不完整，使用规则兜底")
-            rule_params = self._rule_based_extract(user_input)
-            # 合并参数：LLM结果优先，但用规则结果补充缺失字段
-            if params:
-                for key, value in rule_params.items():
-                    if not params.get(key) or params.get(key) == "all":
-                        params[key] = value
-            else:
-                params = rule_params
-        
-        # 5. 参数校验和纠正
-        params = self._validate_and_correct_params(params)
-        
-        logger.info(f"🎯 [IntentParser] 最终参数: {params}")
-        
-        # 6. 判断是否需要获取数据
-        needs_data = intent in [IntentType.QUERY, IntentType.DETAIL, IntentType.RANKING]
-        
-        return {
-            "intent": intent,
-            "params": params,
-            "needs_data": needs_data,
-            "direct_response": None
-        }
-    
-    def _quick_match(self, user_input: str) -> str:
-        """快速关键词匹配"""
-        query_lower = user_input.lower()
-        
-        for intent_type, keywords in self.INTENT_KEYWORDS.items():
-            for keyword in keywords:
-                if keyword in query_lower:
-                    return intent_type
-        
-        return IntentType.QUERY  # 默认查询
-    
-    async def _extract_params(
-        self, 
-        user_input: str, 
-        intent: str, 
-        context_text: str = ""
-    ) -> Dict[str, Any]:
-        """使用LLM提取查询参数（增强版 - 带Few-Shot）
-        
-        Args:
-            user_input: 用户输入
-            intent: 意图类型
-            context_text: 会话上下文
-        """
-        # 构建上下文提示
-        context_hint = ""
-        if context_text:
-            context_hint = f"""
-## 历史上下文（参考）
-{context_text}
-
-注意：如果用户问题很简短（如"这些的评分呢？"），请结合历史上下文推断参数！"""
-        
-        # 增强版Prompt - 包含Few-Shot示例
-        prompt = f"""分析用户问题，提取查询参数。
-
-## 意图类型
-- query: 查询番剧列表，如"最近有什么番剧推荐"
-- detail: 获取番剧详情，如"这部番剧讲了什么"
-- ranking: 查看排行榜，如"评分最高的番剧有哪些"
-
-## 参数提取规则
-### anime_type（番剧类型）- 必填参数！
-- "国漫"、"国产动画"、"国产动漫" → 设置为 "国漫"
-- "日漫"、"日本动画" → 设置为 "日漫"
-- "剧场版"、"电影版"、"动画电影" → 设置为 "剧场版"
-- "OVA"、"OAD" → 设置为 "OVA"
-- 没有提到任何类型 → 设置为 "all"
-
-### time_range（时间范围）
-- "2026-03"、"2026年3月" → "2026-03"
-- "本月"、"这个月" → "本月"
-- "最新"、"最近" → "最新"
-- "2026春"、"春季" → "2026春"
-
-### sort_by（排序方式）
-- "最热"、"热门"、"火" → "hot"
-- "最新"、"新番" → "latest"
-- "评分"、"高分"、"推荐" → "rating"
-
-## Few-Shot示例
-【示例1】
-输入: "推荐几部国漫"
-思考: 用户明确提到"国漫"，anime_type必须设为"国漫"
-输出: {{"anime_type": "国漫", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
-
-【示例2】
-输入: "2024年7月有哪些日漫"
-思考: 用户提到"2024年7月"表示时间，"日漫"表示类型
-输出: {{"anime_type": "日漫", "time_range": "2024-07", "sort_by": "rating", "platform": "all", "keyword": ""}}
-
-【示例3】
-输入: "剧场版电影有哪些"
-思考: 用户提到"剧场版"和"电影"
-输出: {{"anime_type": "剧场版", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
-
-【示例4】
-输入: "有什么番剧推荐"
-思考: 用户没有提到任何类型，使用默认值
-输出: {{"anime_type": "all", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
-
-【示例5】
-输入: "本月最新的热门番剧"
-思考: 用户提到"本月"和时间，"热门"表示sort_by为hot
-输出: {{"anime_type": "all", "time_range": "本月", "sort_by": "hot", "platform": "all", "keyword": ""}}
-
-【示例6 - 模糊场景】
-输入: "最近火的国产动画"
-思考: "国产动画"=国漫，"最近"=最新，"火"=hot
-输出: {{"anime_type": "国漫", "time_range": "最新", "sort_by": "hot", "platform": "all", "keyword": ""}}
-
-## Few-Shot示例（反例 - 常见错误请避免）
-【反例1】
-输入: "我想看动漫电影"
-思考: "电影"应纠正为"剧场版"，不是"电影"
-错误输出: {{"anime_type": "电影", ...}}
-正确输出: {{"anime_type": "剧场版", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
-
-【反例2】
-输入: "2024年的新番"
-思考: "新番"需要结合当前时间判断具体季度，"2024年"只是年份
-错误输出: {{"time_range": "2024", ...}}
-正确输出: {{"anime_type": "all", "sort_by": "latest", "platform": "all", "time_range": "2024", "keyword": ""}}
-
-【反例3】
-输入: "日本动漫"
-思考: "日本动漫"应该识别为"日漫"
-错误输出: {{"anime_type": "日本动漫", ...}}
-正确输出: {{"anime_type": "日漫", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
-
-## 用户问题
-{user_input}
-意图类型: {intent}{context_hint}
-
-## 输出要求
-只输出JSON格式，不要其他任何内容："""
-        
-        messages = [
-            SystemMessage(content=prompt),
-            HumanMessage(content=user_input)
-        ]
-        
-        try:
-            response = await self.llm.agenerate([messages])
-            content = response.generations[0][0].text
-            
-            logger.info(f"📝 [IntentParser] LLM返回的参数: {content}")
-            
-            # 解析JSON
-            params = self._parse_json(content)
-            
-            if not params:
-                logger.warning(f"⚠️ [IntentParser] 参数解析失败，返回空字典")
-                logger.warning(f"   原始内容: {content[:200]}")
-            
-            logger.info(f"🎯 [IntentParser] 解析后的参数: {params}")
-            return params if params else {}
-        except Exception as e:
-            logger.warning(f"参数提取失败: {e}")
-            return {}
-
-    async def astream_extract_params(
-        self, 
-        user_input: str, 
-        intent: str,
-        context_text: str = ""
-    ):
-        """使用LLM流式提取查询参数 - 每次 LLM 输出 chunk 时立即 yield（增强版）
-        
-        Args:
-            user_input: 用户输入
-            intent: 意图类型
-            context_text: 会话上下文
-        """
-        # 构建上下文提示
-        context_hint = ""
-        if context_text:
-            context_hint = f"""
-## 历史上下文（参考）
-{context_text}
-
-注意：如果用户问题很简短（如"这些的评分呢？"），请结合历史上下文推断参数！"""
-        
-        # 增强版Prompt - 包含Few-Shot示例
-        prompt = f"""分析用户问题，提取查询参数。
-
-## 意图类型
-- query: 查询番剧列表，如"最近有什么番剧推荐"
-- detail: 获取番剧详情，如"这部番剧讲了什么"
-- ranking: 查看排行榜，如"评分最高的番剧有哪些"
-
-## 参数提取规则
-### anime_type（番剧类型）- 必填参数！
-- "国漫"、"国产动画"、"国产动漫" → 设置为 "国漫"
-- "日漫"、"日本动画" → 设置为 "日漫"
-- "剧场版"、"电影版"、"动画电影" → 设置为 "剧场版"
-- "OVA"、"OAD" → 设置为 "OVA"
-- 没有提到任何类型 → 设置为 "all"
-
-### time_range（时间范围）
-- "2026-03"、"2026年3月" → "2026-03"
-- "本月"、"这个月" → "本月"
-- "最新"、"最近" → "最新"
-- "2026春"、"春季" → "2026春"
-
-### sort_by（排序方式）
-- "最热"、"热门"、"火" → "hot"
-- "最新"、"新番" → "latest"
-- "评分"、"高分"、"推荐" → "rating"
-
-## Few-Shot示例
-【示例1】
-输入: "推荐几部国漫"
-思考: 用户明确提到"国漫"，anime_type必须设为"国漫"
-输出: {{"anime_type": "国漫", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
-
-【示例2】
-输入: "2024年7月有哪些日漫"
-思考: 用户提到"2024年7月"表示时间，"日漫"表示类型
-输出: {{"anime_type": "日漫", "time_range": "2024-07", "sort_by": "rating", "platform": "all", "keyword": ""}}
-
-【示例3】
-输入: "剧场版电影有哪些"
-思考: 用户提到"剧场版"和"电影"
-输出: {{"anime_type": "剧场版", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
-
-【示例4】
-输入: "有什么番剧推荐"
-思考: 用户没有提到任何类型，使用默认值
-输出: {{"anime_type": "all", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
-
-【示例5】
-输入: "本月最新的热门番剧"
-思考: 用户提到"本月"和时间，"热门"表示sort_by为hot
-输出: {{"anime_type": "all", "time_range": "本月", "sort_by": "hot", "platform": "all", "keyword": ""}}
-
-【示例6 - 模糊场景】
-输入: "最近火的国产动画"
-思考: "国产动画"=国漫，"最近"=最新，"火"=hot
-输出: {{"anime_type": "国漫", "time_range": "最新", "sort_by": "hot", "platform": "all", "keyword": ""}}
-
-## Few-Shot示例（反例 - 常见错误请避免）
-【反例1】
-输入: "我想看动漫电影"
-思考: "电影"应纠正为"剧场版"，不是"电影"
-错误输出: {{"anime_type": "电影", ...}}
-正确输出: {{"anime_type": "剧场版", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
-
-【反例2】
-输入: "2024年的新番"
-思考: "新番"需要结合当前时间判断具体季度
-错误输出: {{"time_range": "2024", ...}}
-正确输出: {{"anime_type": "all", "sort_by": "latest", "platform": "all", "time_range": "2024", "keyword": ""}}
-
-【反例3】
-输入: "日本动漫"
-思考: "日本动漫"应该识别为"日漫"
-错误输出: {{"anime_type": "日本动漫", ...}}
-正确输出: {{"anime_type": "日漫", "sort_by": "rating", "platform": "all", "time_range": "", "keyword": ""}}
-
-## 用户问题
-{user_input}
-意图类型: {intent}{context_hint}
-
-## 输出要求
-只输出JSON格式，不要其他任何内容："""
-        
-        messages = [
-            SystemMessage(content=prompt),
-            HumanMessage(content=user_input)
-        ]
-        
-        full_content = ""
-        try:
-            # 使用 astream 实现真正的流式输出
-            async for chunk in self.llm.astream(messages):
-                if chunk.content:
-                    full_content += chunk.content
-                    yield chunk.content
-            
-            # 解析JSON
-            params = self._parse_json(full_content)
-            if params:
-                yield json.dumps(params, ensure_ascii=False)
-        except Exception as e:
-            logger.warning(f"参数提取失败: {e}")
-            yield f"[解析失败: {e}]"
-    
-    def _parse_json(self, content: str) -> Dict:
-        """解析JSON"""
-        try:
-            # 尝试直接解析
-            return json.loads(content)
-        except:
-            # 尝试提取JSON块
-            match = re.search(r'\{.*\}', content, re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group())
-                except:
-                    pass
-        return {}
-    
-    def _rule_based_extract(self, user_input: str) -> Dict[str, Any]:
-        """基于规则的参数提取（兜底方案）
-        
-        当LLM提取失败时，使用关键词匹配作为兜底
-        支持同义词映射和自动纠正
-        """
-        params = {
-            "anime_type": "all",
-            "time_range": "",
-            "platform": "all",
-            "sort_by": "rating",
-            "keyword": ""
-        }
-        
-        # ========== 同义词映射表 ==========
-        # 番剧类型同义词
-        anime_type_synonyms = {
-            "国漫": ["国漫", "国产", "国创", "中国动画", "国产动漫", "国产番", "国动"],
-            "日漫": ["日漫", "日本动画", "日本动漫", "日本番", "日番", "日本动画"],
-            "剧场版": ["剧场版", "电影版", "动画电影", "动漫电影", "电影", "动漫电影"],
-            "OVA": ["OVA", "OAD", "OVA动画"]
-        }
-        
-        # 排序方式同义词
-        sort_by_synonyms = {
-            "hot": ["最热", "热门", "火", "热度", "最火", "人气", "火爆"],
-            "latest": ["最新", "新番", "刚出", "上新", "最近", "最近更新"],
-            "rating": ["评分", "高分", "推荐", "评分高", "口碑好", "评价好", "最高分"]
-        }
-        
-        # 时间范围同义词
-        time_synonyms = {
-            "本月": ["本月", "这个月", "当月"],
-            "最新": ["最新", "最近", "新番", "刚出", "刚更新"],
-            "春": ["春季", "春番", "春天", "2026春"],
-            "夏": ["夏季", "夏番", "夏天", "2026夏"],
-            "秋": ["秋季", "秋番", "秋天", "2026秋"],
-            "冬": ["冬季", "冬番", "冬天", "2026冬"]
-        }
-        
-        # 检测番剧类型关键词（同义词匹配）
-        for type_name, synonyms in anime_type_synonyms.items():
-            if any(kw in user_input for kw in synonyms):
-                params["anime_type"] = type_name
-                logger.info(f"📝 [IntentParser] 规则兜底检测到类型: {type_name}")
-                break
-        
-        # 检测时间范围关键词（同义词匹配）
-        import re
-        time_patterns = [
-            # 精确格式：2026-03, 2024年7月
-            (r"(\d{4})-(\d{2})", lambda m: f"{m.group(1)}-{m.group(2)}"),
-            (r"(\d{4})年(\d{1,2})月", lambda m: f"{m.group(1)}-{int(m.group(2)):02d}"),
-        ]
-        
-        # 先匹配精确时间格式
-        for pattern, extractor in time_patterns:
-            match = re.search(pattern, user_input)
-            if match:
-                params["time_range"] = extractor(match)
-                logger.info(f"📝 [IntentParser] 规则兜底检测到时间: {params['time_range']}")
-                break
-        
-        # 如果没有精确匹配，尝试同义词
-        if not params["time_range"]:
-            for time_name, synonyms in time_synonyms.items():
-                if any(kw in user_input for kw in synonyms):
-                    # 尝试提取年份
-                    year_match = re.search(r"(\d{4})", user_input)
-                    if year_match:
-                        params["time_range"] = f"{year_match.group(1)}{time_name}"
-                    else:
-                        params["time_range"] = time_name
-                    logger.info(f"📝 [IntentParser] 规则兜底检测到时间: {params['time_range']}")
-                    break
-        
-        # 检测排序关键词（同义词匹配）
-        for sort_name, synonyms in sort_by_synonyms.items():
-            if any(kw in user_input for kw in synonyms):
-                params["sort_by"] = sort_name
-                logger.info(f"📝 [IntentParser] 规则兜底检测到排序: {sort_name}")
-                break
-        
-        # 检测平台关键词
-        if "bangumi" in user_input.lower() or "番组" in user_input:
-            params["platform"] = "bangumi"
-        elif "b站" in user_input or "bilibili" in user_input.lower():
-            params["platform"] = "bilibili"
-        
-        logger.info(f"📝 [IntentParser] 规则兜底提取的参数: {params}")
-        return params
-    
-    def _validate_and_correct_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """参数校验和纠正（增强版）
-        
-        确保参数值在合法范围内，防止非法值传播
-        支持自动纠正：将用户口语化表述自动转换为标准参数值
-        """
-        if not params:
-            return params
-        
-        # 枚举值定义
-        valid_platforms = ["jikan", "anilist", "bangumi", "bilibili", "all"]
-        valid_types = ["日漫", "国漫", "剧场版", "OVA", "all"]
-        valid_sorts = ["rating", "hot", "latest"]
-        
-        # ========== 自动纠正逻辑 ==========
-        # anime_type 自动纠正映射
-        type_correction_map = {
-            "电影": "剧场版",
-            "动漫电影": "剧场版",
-            "动画": "all",
-            "番": "all",
-            "番剧": "all",
-            "日本": "日漫",
-            "国产": "国漫",
-        }
-        
-        # 检测 anime_type 是否需要自动纠正
-        current_type = params.get("anime_type", "")
-        if current_type in type_correction_map:
-            old_value = current_type
-            params["anime_type"] = type_correction_map[current_type]
-            logger.info(f"🔧 [IntentParser] anime_type 自动纠正: '{old_value}' → '{params['anime_type']}'")
-        
-        # time_range 格式归一化
-        time_str = params.get("time_range", "")
-        if time_str:
-            # 处理 "2024年7月" -> "2024-07" 格式
-            import re
-            year_month_match = re.match(r"(\d{4})年(\d{1,2})月", time_str)
-            if year_month_match:
-                params["time_range"] = f"{year_month_match.group(1)}-{int(year_month_match.group(2)):02d}"
-                logger.info(f"🔧 [IntentParser] time_range 格式归一化: {time_str} → {params['time_range']}")
-        
-        # ========== 枚举值校验 ==========
-        # 校验并纠正 anime_type
-        if params.get("anime_type") not in valid_types:
-            old_value = params.get("anime_type")
-            params["anime_type"] = "all"
-            logger.warning(f"⚠️ [IntentParser] anime_type 非法值 '{old_value}' 已纠正为 'all'")
-        
-        # 校验并纠正 platform
-        if params.get("platform") not in valid_platforms:
-            old_value = params.get("platform")
-            params["platform"] = "all"
-            logger.warning(f"⚠️ [IntentParser] platform 非法值 '{old_value}' 已纠正为 'all'")
-        
-        # 校验并纠正 sort_by
-        if params.get("sort_by") not in valid_sorts:
-            old_value = params.get("sort_by")
-            params["sort_by"] = "rating"
-            logger.warning(f"⚠️ [IntentParser] sort_by 非法值 '{old_value}' 已纠正为 'rating'")
-        
-        return params
-    
-    def _get_direct_response(self, intent: str) -> str:
-        """获取直接回复"""
-        responses = {
-            IntentType.GREETING: "你好！我是番剧智能助手，专注于帮助你了解日本动画番剧的相关信息。有什么番剧想了解的吗？",
-            IntentType.CAPABILITY: """我可以帮助你：
-1. 📋 查询番剧信息 - 根据时间、类型、平台搜索番剧
-2. 📖 了解番剧详情 - 获取特定番剧的剧情介绍
-3. 🔥 查看热门排行 - 了解当前最受欢迎的番剧
-4. 🔍 关键词搜索 - 搜索特定番剧信息
-
-请告诉我你想了解什么？""",
-            IntentType.THANKS: "不客气！很高兴能帮到你。还有什么想了解的吗？"
-        }
-        return responses.get(intent, "你好！有什么可以帮你的？")
-
-
 # ==================== 计划生成器 ====================
 
 class Planner:
@@ -601,6 +84,9 @@ class Planner:
             return [self._plan_detail(params)]
         elif intent == IntentType.RANKING:
             return [self._plan_ranking(params)]
+        elif intent == IntentType.RECOMMEND:
+            # 推荐意图也使用查询工具，sort_by 默认为 rating（推荐按评分）
+            return [self._plan_recommend(params)]
         else:
             return []  # 无需工具
     
@@ -645,6 +131,23 @@ class Planner:
                 "platform": params.get("platform", "all"),
                 "anime_type": params.get("anime_type", "all"),
                 "sort_by": params.get("sort_by", "rating")
+            }
+        }
+    
+    def _plan_recommend(self, params: Dict) -> Dict:
+        """推荐计划
+        
+        推荐意图本质上也是查询，使用 query_anime 工具
+        但 sort_by 默认为 rating（按评分推荐）
+        """
+        return {
+            "tool": "query_anime",
+            "params": {
+                "time_range": params.get("time_range") or "最新",  # 推荐近期番剧
+                "platform": params.get("platform", "all"),
+                "anime_type": params.get("anime_type", "all"),
+                "sort_by": params.get("sort_by", "rating"),  # 按评分推荐
+                "keyword": params.get("keyword")
             }
         }
 
@@ -985,6 +488,11 @@ class AnimeAgent:
     ):
         """运行智能体（增量流式输出）- 支持会话上下文
         
+        错误处理策略：
+        1. 每个步骤都有独立的 try-except
+        2. 异常不会中断整个流程，而是发送错误消息后继续
+        3. 重要步骤失败会发送错误消息给前端
+        
         Args:
             user_input: 用户输入
             chat_history: 聊天历史（兼容旧接口）
@@ -995,41 +503,80 @@ class AnimeAgent:
         session = None
         context_text = ""
         
-        if self._session_manager and session_id:
-            session = self._session_manager.get_session(session_id)
-            if session:
-                # 获取会话上下文
-                max_turns = 5
-                if CONFIG_AVAILABLE and settings:
-                    max_turns = settings.max_conversation_turns
-                context_text = session.get_context_text(max_turns)
-                logger.info(f"📜 会话上下文: {len(context_text)} 字符")
+        try:
+            if self._session_manager and session_id:
+                session = self._session_manager.get_session(session_id)
+                if session:
+                    # 获取会话上下文
+                    max_turns = 5
+                    if CONFIG_AVAILABLE and settings:
+                        max_turns = settings.max_conversation_turns
+                    context_text = session.get_context_text(max_turns)
+                    logger.info(f"📜 会话上下文: {len(context_text)} 字符")
+        except Exception as e:
+            logger.warning(f"获取会话上下文失败: {e}")
         
         # 记录用户查询
-        chat_logger.log_user_query(user_input)
+        try:
+            chat_logger.log_user_query(user_input)
+        except Exception as e:
+            logger.warning(f"记录用户查询失败: {e}")
         
         # 如果有会话，添加用户消息
         if session:
-            self._session_manager.add_user_message(session.session_id, user_input)
+            try:
+                self._session_manager.add_user_message(session.session_id, user_input)
+            except Exception as e:
+                logger.warning(f"添加用户消息失败: {e}")
         
         self._log(f"🎯 开始处理: {user_input}")
         
-        # ========== 第一步：意图解析（真正流式） ==========
+        # ========== 第一步：意图解析（带错误处理） ==========
         yield {"type": "intent", "status": "parsing", "delta": "分析用户意图..."}
         
-        # 快速关键词匹配意图
-        intent = self.intent_parser._quick_match(user_input)
+        try:
+            # LLM意图识别（主要方式）+ 关键词兜底
+            intent = await self.intent_parser._recognize_intent(user_input, context_text)
+        except Exception as e:
+            logger.error(f"意图识别失败: {e}")
+            yield {"type": "error", "content": f"意图识别失败: {str(e)}"}
+            # 使用默认意图继续
+            intent = IntentType.QUERY
+            intent_str = intent.value if hasattr(intent, 'value') else str(intent)
+            yield {"type": "intent", "status": "error", "intent": intent_str, "params": {}, "needs_data": True}
+        
+        # 转换为字符串（IntentType枚举不能直接JSON序列化）
+        intent_str = intent.value if hasattr(intent, 'value') else str(intent)
         
         # 记录意图
-        chat_logger.log_intent(intent, {})
+        try:
+            chat_logger.log_intent(intent_str, {})
+        except Exception as e:
+            logger.warning(f"记录意图失败: {e}")
         
         # 增量发送意图类型
-        yield {"type": "intent", "status": "parsing", "intent_delta": intent}
+        yield {"type": "intent", "status": "parsing", "intent_delta": intent_str}
         
         # 如果是直接回复类型，直接返回
-        if intent in [IntentType.GREETING, IntentType.CAPABILITY, IntentType.THANKS]:
+        direct_reply_intents = [
+            IntentType.GREETING.value, 
+            IntentType.DESCRIPTION.value,
+            IntentType.CAPABILITY.value, 
+            IntentType.THANKS.value,
+            IntentType.UNKNOWN.value  # 新增：无法理解的输入
+        ]
+        if intent_str in direct_reply_intents:
+            # 获取回复内容（分层策略）
             direct_response = self.intent_parser._get_direct_response(intent)
-            yield {"type": "intent", "status": "done", "intent": intent, "params": {}, "needs_data": False}
+            
+            # 如果返回 None，说明需要 LLM 生成复杂回复
+            if direct_response is None:
+                yield {"type": "intent", "status": "generating", "delta": "生成回复中..."}
+                direct_response = await self.intent_parser._generate_complex_response(
+                    intent_str, user_input, context_text
+                )
+            
+            yield {"type": "intent", "status": "done", "intent": intent_str, "params": {}, "needs_data": False}
             
             # 直接回复（流式输出回复内容）
             chat_logger.log_response(direct_response)
@@ -1046,7 +593,7 @@ class AnimeAgent:
         # 使用流式 LLM 提取参数（传入上下文）
         params = {}
         full_params_text = ""
-        async for param_chunk in self.intent_parser.astream_extract_params(user_input, intent, context_text):
+        async for param_chunk in self.intent_parser._astream_extract_params(user_input, intent, context_text):
             full_params_text += param_chunk
             yield {"type": "intent", "status": "parsing", "params_delta": param_chunk}
         
@@ -1074,10 +621,13 @@ class AnimeAgent:
         # 参数校验和纠正
         params = self.intent_parser._validate_and_correct_params(params)
         
-        self._log(f"🎯 意图识别: {intent}, 参数: {params}")
+        # 意图转字符串（确保是字符串而不是枚举对象）
+        intent_str = intent.value if hasattr(intent, 'value') else str(intent)
+        
+        self._log(f"🎯 意图识别: {intent_str}, 参数: {params}")
         
         # 记录意图
-        chat_logger.log_intent(intent, params)
+        chat_logger.log_intent(intent_str, params)
         
         # 更新会话槽位（如果有会话）
         if session and params:
@@ -1104,8 +654,8 @@ class AnimeAgent:
                         params
                     )
                     clarification = f"好的，请帮你确认一下，{question}？"
-                    
-                    yield {"type": "intent", "status": "done", "intent": intent, "params": params, "needs_data": False, "clarification": clarification}
+                    intent_str = intent.value if hasattr(intent, 'value') else str(intent)
+                    yield {"type": "intent", "status": "done", "intent": intent_str, "params": params, "needs_data": False, "clarification": clarification}
                     
                     # 输出澄清问题
                     chat_logger.log_response(clarification)
@@ -1122,13 +672,19 @@ class AnimeAgent:
                 if validation_result["errors"]:
                     logger.warning(f"槽位校验警告: {validation_result['errors']}")
         
-        # 意图完成
-        yield {"type": "intent", "status": "done", "intent": intent, "params": params, "needs_data": needs_data}
+        # 意图完成（转换为字符串）
+        intent_str = intent.value if hasattr(intent, 'value') else str(intent)
+        yield {"type": "intent", "status": "done", "intent": intent_str, "params": params, "needs_data": needs_data}
         
-        # ========== 第三步：生成计划（真正流式） ==========
+        # ========== 第三步：生成计划（带错误处理） ==========
         yield {"type": "plan", "status": "planning", "delta": "生成执行计划..."}
         
-        plan = await self.planner.plan(intent, params)
+        try:
+            plan = await self.planner.plan(intent, params)
+        except Exception as e:
+            logger.error(f"计划生成失败: {e}")
+            yield {"type": "error", "content": f"生成执行计划失败: {str(e)}"}
+            plan = []  # 使用空计划继续
         
         self._log(f"📋 执行计划: {plan}")
         
@@ -1139,10 +695,15 @@ class AnimeAgent:
         # 计划完成
         yield {"type": "plan", "status": "done", "plan": plan}
         
-        # ========== 第四步：执行工具（增量） ==========
+        # ========== 第四步：执行工具（带错误处理） ==========
         yield {"type": "execution", "status": "executing", "delta": "开始执行工具..."}
         
-        results = await self.executor.execute(plan)
+        try:
+            results = await self.executor.execute(plan)
+        except Exception as e:
+            logger.error(f"工具执行失败: {e}")
+            yield {"type": "error", "content": f"执行工具失败: {str(e)}"}
+            results = []
         
         # 检查执行结果
         success_count = sum(1 for r in results if r.get("success"))
@@ -1161,20 +722,40 @@ class AnimeAgent:
         # 执行完成
         yield {"type": "execution", "status": "done", "results": results}
         
-        # ========== 第五步：生成响应（真正流式） ==========
+        # ========== 第五步：生成响应（带错误处理） ==========
         # 使用 astream_generate 实现真正的流式输出
         # 每次 LLM 输出一个 chunk 就立即 yield 发送给前端
         full_response = ""
-        async for chunk in self.response_generator.astream_generate(user_input, intent, results):
-            full_response += chunk
-            yield {"type": "output", "status": "streaming", "content_delta": chunk}
+        
+        try:
+            async for chunk in self.response_generator.astream_generate(user_input, intent, results):
+                full_response += chunk
+                yield {"type": "output", "status": "streaming", "content_delta": chunk}
+        except Exception as e:
+            logger.error(f"响应生成失败: {e}")
+            yield {"type": "error", "content": f"生成回复失败: {str(e)}"}
+            # 尝试生成降级响应
+            if results:
+                full_response = "抱歉，回复生成出现了一些问题。以下是查询结果：\n\n"
+                for r in results:
+                    if r.get("success"):
+                        full_response += f"- {r.get('result', '无结果')[:200]}\n"
+            else:
+                full_response = "抱歉，服务暂时不可用，请稍后重试。"
+            yield {"type": "output", "status": "streaming", "content_delta": full_response}
         
         # 记录响应
-        chat_logger.log_response(full_response)
+        try:
+            chat_logger.log_response(full_response)
+        except Exception as e:
+            logger.warning(f"记录响应失败: {e}")
         
         # 如果有会话，添加助手消息
         if session:
-            self._session_manager.add_assistant_message(session.session_id, full_response)
+            try:
+                self._session_manager.add_assistant_message(session.session_id, full_response)
+            except Exception as e:
+                logger.warning(f"添加助手消息失败: {e}")
         
         # 回复完成
         yield {"type": "output", "status": "done", "content": full_response}

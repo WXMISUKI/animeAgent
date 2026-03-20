@@ -3,11 +3,15 @@ from .types import IntentType, IntentTypeConfig
 from .slots import SlotDefinition
 from .parser import IntentParser
 from .prompts import IntentPrompts
+from .agent import IntentAgent, ConfidenceLevel, create_intent_agent
 
 __all__ = [
     "IntentType",
     "IntentTypeConfig",
     "SlotDefinition", 
     "IntentParser",
-    "IntentPrompts"
+    "IntentPrompts",
+    "IntentAgent",
+    "ConfidenceLevel",
+    "create_intent_agent"
 ]

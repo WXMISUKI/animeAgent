@@ -141,15 +141,35 @@ class BilibiliAPI(AnimeDataSource):
                         url,
                         params=params_dict,
                         timeout=aiohttp.ClientTimeout(total=10),
-                        headers={"User-Agent": "Mozilla/5.0"}
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Referer": "https://www.bilibili.com",
+                            "Accept": "application/json, text/plain, */*",
+                            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+                        }
                     ) as resp:
                         status = resp.status
+                        
+                        # 检查返回类型
+                        content_type = resp.headers.get("Content-Type", "")
+                        logger.info(f"📥 [BilibiliAPI] 响应: 状态码={status}, Content-Type={content_type}")
+                        
+                        # 如果不是 JSON，返回错误
+                        if "application/json" not in content_type:
+                            text = await resp.text()
+                            logger.warning(f"⚠️ [BilibiliAPI] 返回非JSON: {text[:200]}")
+                            continue
+                        
                         data = await resp.json()
                         
                         logger.info(f"📥 [BilibiliAPI] _search_by_chinese_anime 响应: 状态码={status}, code={data.get('code')}")
-                        logger.info(f"   响应: {json.dumps(data, ensure_ascii=False)[:500]}")
+                        
+                        # 打印完整响应用于调试
+                        response_str = json.dumps(data, ensure_ascii=False)
+                        logger.info(f"   响应({len(response_str)}字符): {response_str[:1000]}")
                         
                         if status != 200 or data.get("code") != 0:
+                            logger.warning(f"⚠️ [BilibiliAPI] API返回错误: code={data.get('code')}, message={data.get('message')}")
                             continue
                         
                         # B站搜索结果结构
