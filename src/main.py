@@ -63,9 +63,9 @@ app = FastAPI(
 
 IS_VERCEL = bool(os.environ.get("VERCEL"))
 
-# 前端目录（Vercel 用 public/，本地用 frontend/）
+# 前端目录（frontend/ 会被打包进 Vercel 函数，public/ 由 Vercel CDN 托管无法在函数内访问）
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_FRONTEND_DIR = os.path.join(_BASE_DIR, "public" if IS_VERCEL else "frontend")
+_FRONTEND_DIR = os.path.join(_BASE_DIR, "frontend")
 
 # ---------- CORS 配置（通过环境变量控制） ----------
 _cors_origins_raw = os.getenv("CORS_ALLOW_ORIGINS", "*")
