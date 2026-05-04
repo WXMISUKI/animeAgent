@@ -10,7 +10,9 @@
       "Bash(python -c ' *)",
       "Bash(python -c \"from src.llm.client import create_llm, LLMClient, MiniMaxClient; print\\('llm.client imports: OK'\\)\")",
       "Bash(python -c \"from src.llm import create_llm, LLMClient; print\\('llm module imports: OK'\\)\")",
-      "Bash(python -c \"from src.main import app; print\\('main.py app import: OK'\\)\")"
+      "Bash(python -c \"from src.main import app; print\\('main.py app import: OK'\\)\")",
+      "Bash(git remote *)",
+      "Bash(git push *)"
     ]
   }
 }
