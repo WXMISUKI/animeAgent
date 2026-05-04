@@ -1,8 +1,10 @@
 # 番剧智能体 - 快速启动指南
-当前项目开发环境我们有自己的开发环境，直接执行conda activate myenv
+
+当前项目开发环境我们有自己的开发环境，直接执行 `conda activate myenv`
+
 ## 项目简介
 
-基于 MiniMax M2.5 模型的番剧信息查询智能体，提供 Web 界面和 API 接口。
+基于豆包大模型的番剧信息查询智能体，提供 Web 界面和 API 接口。
 
 ## 部署到 Vercel
 
@@ -13,19 +15,18 @@ Redis 升级参考：[docs/checkpoint从memory升级redis迁移指南.md](./docs
 
 | 组件 | 技术 |
 |------|------|
-| LLM | MiniMax M2.5 (通过阿里云 DashScope) |
+| LLM | 豆包大模型 (火山引擎 Ark) |
 | 后端框架 | FastAPI + LangGraph |
 | 前端 | HTML + CSS + JavaScript |
-| 数据源 | Bangumi API (模拟数据) |
+| 数据源 | Jikan + AniList + Bangumi + Bilibili + 百度搜索 |
 
 ## 快速启动
 
 ### 1. 环境准备
 
 ```bash
-# 创建 conda 环境
-conda create -n anime-agent python=3.11 -y
-conda activate anime-agent
+# 使用已有 conda 环境
+conda activate myenv
 
 # 安装依赖
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -41,10 +42,10 @@ copy .env.example .env
 编辑 `.env` 文件，填入你的 API Key：
 
 ```env
-# MiniMax 配置（必需）
-ORCH_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
-ORCH_MODEL=MiniMax/MiniMax-M2.5
-ORCH_API_KEY=sk-your-api-key-here
+# 豆包配置（必需）
+ORCH_API_BASE=https://ark.cn-beijing.volces.com/api/v3
+ORCH_MODEL=your-doubao-endpoint-id
+ORCH_API_KEY=your-ark-api-key
 
 # 日志配置（可选）
 LOG_LEVEL=INFO
@@ -105,7 +106,11 @@ curl http://localhost:8000/health
 ```
 anime-agent/
 ├── .env                    # 环境变量配置
-├── requirements.txt         # Python 依赖
+├── index.py                # Vercel Python 入口
+├── pyproject.toml           # 依赖声明（Vercel uv 构建用）
+├── uv.lock                  # 依赖锁定文件
+├── vercel.json              # Vercel 路由配置
+├── requirements.txt         # Python 依赖（本地 pip 用）
 ├── src/                    # 后端源码
 │   ├── main.py            # FastAPI 入口
 │   ├── agent/             # Agent 编排
@@ -113,7 +118,11 @@ anime-agent/
 │   ├── llm/               # LLM 客户端
 │   ├── data_sources/      # 数据源
 │   └── models/            # 数据模型
-├── frontend/              # 前端页面
+├── public/                # 前端页面（Vercel 部署用，自动托管）
+│   ├── index.html
+│   ├── styles.css
+│   └── app.js
+├── frontend/              # 前端页面（本地开发用）
 │   ├── index.html
 │   ├── styles.css
 │   └── app.js
@@ -126,28 +135,27 @@ anime-agent/
 
 **检查 .env 文件是否正确配置：**
 ```bash
-# 验证环境变量
 python -c "from dotenv import load_dotenv; load_dotenv(); import os; print(os.getenv('ORCH_API_KEY'))"
 ```
 
 ### Q2: 前端无法连接后端
 
-确保后端服务正在运行，端口 8000 可访问。
+确保后端在 8000 端口运行。前端本地开发时自动将 API 请求指向 `http://localhost:8000`。
 
-### Q3: 如何获取 MiniMax API Key
+### Q3: 如何获取豆包 API Key
 
-1. 访问阿里云 DashScope：https://dashscope.console.aliyun.com/
+1. 访问火山引擎 Ark：https://console.volcengine.com/ark
 2. 注册/登录账号
-3. 创建 API Key
-4. 将 Key 填入 .env 文件
+3. 创建模型接入点，获取 Endpoint ID 和 API Key
+4. 将 Endpoint ID 填入 `ORCH_MODEL`，API Key 填入 `ORCH_API_KEY`
 
 ## 技术支持
 
-- MiniMax 文档：https://platform.minimax.chat/document
+- 火山引擎 Ark 文档：https://www.volcengine.com/docs/82379
 - FastAPI 文档：https://fastapi.tiangolo.com/zh/
 - LangGraph 文档：https://langchain-ai.github.io/langgraph/
 
 ---
 
-**版本**: v2.1
-**更新日期**: 2026-03-10
+**版本**: v3.0
+**更新日期**: 2026-05-04

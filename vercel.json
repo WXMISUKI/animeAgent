@@ -6,7 +6,6 @@
     { "src": "/health/detail", "dest": "/index.py" },
     { "src": "/metrics", "dest": "/index.py" },
     { "src": "/chat", "dest": "/index.py" },
-    { "src": "/chat/stream", "dest": "/index.py" },
-    { "src": "/(.*)", "dest": "/frontend/$1" }
+    { "src": "/chat/stream", "dest": "/index.py" }
   ]
 }

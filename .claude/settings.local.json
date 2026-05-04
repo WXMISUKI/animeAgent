@@ -14,7 +14,13 @@
       "Bash(git remote *)",
       "Bash(git push *)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/utils/logger.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python -c \"from src.utils.logger import chat_logger, logger; print\\('logger import: OK'\\)\")"
+      "Bash(python -c \"from src.utils.logger import chat_logger, logger; print\\('logger import: OK'\\)\")",
+      "Bash(git mv *)",
+      "Bash(xargs grep *)",
+      "Bash(mkdir frontend *)",
+      "Bash(cp public/app.js public/index.html public/styles.css frontend/)",
+      "Bash(git add *)",
+      "Bash(netstat -ano)"
     ]
   }
 }
