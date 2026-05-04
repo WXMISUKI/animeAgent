@@ -1,0 +1,18 @@
+# Vercel 部署排除文件
+API/
+docs/
+tests/
+logs/
+scripts/
+.pytest_cache/
+__pycache__/
+.env
+.git/
+.github/
+*.md
+agent.md
+minimax使用手册.md
+无法调用工具时的设计方案.md
+history_chat.txt
+err.txt
+test_minimax.py

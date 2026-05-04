@@ -5,15 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>番剧智能助手</title>
     <link rel="stylesheet" href="styles.css">
-    <!-- 引入 markdown-it -->
+    <!-- markdown-it: 主 CDN + 国内备用 + 容错 -->
     <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.0.0/dist/markdown-it.min.js"></script>
     <script>
-        // 初始化 markdown-it
-        window.md = window.markdownit({
-            html: false,
-            linkify: true,
-            typographer: true
-        });
+        if (typeof markdownit === 'undefined') {
+            document.write('<script src="https://unpkg.com/markdown-it@14.0.0/dist/markdown-it.min.js"><\/script>');
+        }
+    </script>
+    <script>
+        if (typeof markdownit === 'function') {
+            window.md = markdownit({ html: false, linkify: true, typographer: true });
+        } else {
+            window.md = null;
+            console.warn('markdown-it 加载失败，将以纯文本显示');
+        }
     </script>
 </head>
 <body>

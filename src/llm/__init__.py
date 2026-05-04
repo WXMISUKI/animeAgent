@@ -1,6 +1,6 @@
 # llm/__init__.py
 """LLM 模块"""
 
-from .client import MiniMaxClient
+from .client import LLMClient, create_llm
 
-__all__ = ["MiniMaxClient"]
+__all__ = ["LLMClient", "create_llm"]

@@ -1,9 +1,10 @@
 # llm/client.py
-"""MiniMax 模型客户端"""
+"""LLM 客户端 - 豆包大模型"""
 
 import os
 import json
 import re
+import logging
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from .prompts import (
@@ -15,27 +16,31 @@ from .prompts import (
     INTENT_KEYWORDS
 )
 
+logger = logging.getLogger("LLMClient")
 
-class MiniMaxClient:
-    """MiniMax 模型客户端"""
+
+def create_llm(
+    temperature: float = 0.7,
+    max_tokens: int = 2000,
+    streaming: bool = False,
+):
+    """创建豆包 LLM 实例"""
+    return ChatOpenAI(
+        model=os.getenv("ORCH_MODEL", ""),
+        temperature=temperature,
+        max_tokens=max_tokens,
+        streaming=streaming,
+        base_url=os.getenv("ORCH_API_BASE", "https://ark.cn-beijing.volces.com/api/v3"),
+        api_key=os.getenv("ORCH_API_KEY", ""),
+    )
+
+
+class LLMClient:
+    """豆包 LLM 客户端"""
 
     def __init__(self):
-        self.client = ChatOpenAI(
-            model=os.getenv("ORCH_MODEL", "MiniMax/MiniMax-M2.5"),
-            temperature=0.7,  # 默认温度
-            max_tokens=2000,
-            base_url=os.getenv("ORCH_API_BASE"),
-            api_key=os.getenv("ORCH_API_KEY")
-        )
-
-        # 意图解析专用客户端（更低温度）
-        self.intent_client = ChatOpenAI(
-            model=os.getenv("ORCH_MODEL"),
-            temperature=0.1,
-            max_tokens=500,
-            base_url=os.getenv("ORCH_API_BASE"),
-            api_key=os.getenv("ORCH_API_KEY")
-        )
+        self.client = create_llm(temperature=0.7, max_tokens=2000)
+        self.intent_client = create_llm(temperature=0.1, max_tokens=500)
 
     def classify_intent(self, query: str) -> dict:
         """意图分类 - 先用关键词快速匹配，失败则调用 LLM"""
@@ -143,14 +148,8 @@ class MiniMaxClient:
     
     def chat(self, messages: list, temperature: float = 0.7, max_tokens: int = 2000) -> str:
         """通用对话接口"""
-        
-        chat_client = ChatOpenAI(
-            model=os.getenv("ORCH_MODEL"),
-            temperature=temperature,
-            max_tokens=max_tokens,
-            base_url=os.getenv("ORCH_API_BASE"),
-            api_key=os.getenv("ORCH_API_KEY")
-        )
+
+        chat_client = create_llm(temperature=temperature, max_tokens=max_tokens)
         
         # 转换消息格式
         langchain_messages = []
@@ -167,15 +166,8 @@ class MiniMaxClient:
     
     def stream_chat(self, messages: list, temperature: float = 0.7):
         """流式对话"""
-        
-        chat_client = ChatOpenAI(
-            model=os.getenv("ORCH_MODEL"),
-            temperature=temperature,
-            max_tokens=2000,
-            base_url=os.getenv("ORCH_API_BASE"),
-            api_key=os.getenv("ORCH_API_KEY"),
-            streaming=True
-        )
+
+        chat_client = create_llm(temperature=temperature, max_tokens=2000, streaming=True)
         
         # 转换消息格式
         langchain_messages = []

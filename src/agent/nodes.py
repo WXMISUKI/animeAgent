@@ -4,7 +4,7 @@
 import asyncio
 import concurrent.futures
 from .state import AgentState
-from ..llm.client import MiniMaxClient
+from ..llm.client import LLMClient
 from ..llm.prompts import DIRECT_RESPONSE_TEMPLATES
 from ..skills.query import AnimeQuerySkill
 from ..skills.detail import AnimeDetailSkill
@@ -90,7 +90,7 @@ def classify_intent(state: AgentState) -> AgentState:
 
     # 其他情况：交给LLM判断
     # 调用 LLM 进行意图分类
-    client = MiniMaxClient()
+    client = LLMClient()
     classify_result = client.classify_intent(user_query)
 
     intent_type = classify_result.get("intent_type", "query")  # 默认是查询
@@ -130,7 +130,7 @@ def parse_intent(state: AgentState) -> AgentState:
     messages = state.get("messages", [])
 
     # 调用 LLM 解析意图参数
-    client = MiniMaxClient()
+    client = LLMClient()
     intent_result = client.parse_intent(user_query, messages)
 
     intent = intent_result.get("intent", {})
@@ -285,7 +285,7 @@ def format_response(state: AgentState) -> AgentState:
     if state.get("final_response"):
         return state
 
-    client = MiniMaxClient()
+    client = LLMClient()
     anime_results = state.get("anime_results", [])
     user_query = state["user_query"]
 
@@ -315,7 +315,7 @@ def direct_reply(state: AgentState) -> AgentState:
 
     # 获取意图类型并生成对应回复
     intent_type = state.get("intent_type", "chat")
-    client = MiniMaxClient()
+    client = LLMClient()
 
     response = client.get_direct_response(intent_type)
 

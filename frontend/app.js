@@ -9,7 +9,7 @@ class AnimeChatbot {
         this.userInput = document.getElementById('userInput');
         this.sendBtn = document.getElementById('sendBtn');
         this.apiStatus = document.getElementById('apiStatus');
-        this.apiBase = 'http://localhost:8000';
+        this.apiBase = this.resolveApiBase();
         
         // 加载状态
         this.isLoading = false;
@@ -20,8 +20,23 @@ class AnimeChatbot {
         
         // 对话历史
         this.messages = [];
+        this.sessionId = this.createSessionId();
+        this.threadId = null;
         
         this.init();
+    }
+
+    resolveApiBase() {
+        const loc = window.location;
+        if (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1' || loc.hostname === '::1') {
+            return 'http://localhost:8000';
+        }
+        return loc.origin;
+    }
+
+    createSessionId() {
+        const randomPart = Math.random().toString(36).slice(2, 10);
+        return `web_${Date.now()}_${randomPart}`;
     }
     
     init() {
@@ -104,7 +119,9 @@ class AnimeChatbot {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     query: message,
-                    history: this.getHistory()
+                    history: this.getHistory(),
+                    session_id: this.sessionId,
+                    thread_id: this.threadId
                 }),
                 signal: this.abortController.signal
             });
@@ -117,6 +134,14 @@ class AnimeChatbot {
             await this.processStream(response, thinkingContainer, contentArea);
             
         } catch (e) {
+            const fallbackDone = await this.tryFallbackToNonStream(message, contentArea, e);
+            if (fallbackDone) {
+                this.setLoading(false);
+                this.abortController = null;
+                this.processPendingQueue();
+                return;
+            }
+
             if (e.name === 'AbortError') {
                 // 用户主动停止
                 contentArea.innerHTML += '<br>[已停止]';
@@ -135,6 +160,35 @@ class AnimeChatbot {
         
         // 处理待发送队列中的消息
         this.processPendingQueue();
+    }
+
+    async tryFallbackToNonStream(message, contentArea, streamError) {
+        if (streamError && streamError.name === 'AbortError') {
+            return false;
+        }
+        try {
+            const response = await fetch(`${this.apiBase}/api/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query: message,
+                    session_id: this.sessionId,
+                    thread_id: this.threadId
+                })
+            });
+            if (!response.ok) {
+                return false;
+            }
+            const data = await response.json();
+            if (data.session_id) {
+                this.sessionId = data.session_id;
+            }
+            contentArea.innerHTML = this.escapeHtml(data.response || '抱歉，未获取到有效回复。');
+            this.messages.push({ role: 'assistant', content: contentArea.innerHTML });
+            return true;
+        } catch {
+            return false;
+        }
     }
     
     // 处理待发送队列
@@ -233,6 +287,15 @@ class AnimeChatbot {
     
     handleStreamData(data, thinkingContainer, contentArea) {
         const type = data.type;
+        if (type === 'session') {
+            if (data.session_id) {
+                this.sessionId = data.session_id;
+            }
+            if (data.thread_id) {
+                this.threadId = data.thread_id;
+            }
+            return;
+        }
         
         // 获取思考内容区域
         const thinkingContent = thinkingContainer.querySelector('.thinking-content');
@@ -623,12 +686,9 @@ function toggleThinking(header) {
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
-    // 初始化markdown-it
-    window.md = window.markdownit({
-        html: false,
-        linkify: true,
-        typographer: true
-    });
-    
+    if (typeof markdownit === 'function' && !window.md) {
+        window.md = markdownit({ html: false, linkify: true, typographer: true });
+    }
+
     new AnimeChatbot();
 });

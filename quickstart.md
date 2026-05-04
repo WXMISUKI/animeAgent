@@ -1,8 +1,13 @@
 # 番剧智能体 - 快速启动指南
-当前项目开发环境我们有自己的开发环境，直接执行conda activate langgraph-env
+当前项目开发环境我们有自己的开发环境，直接执行conda activate myenv
 ## 项目简介
 
 基于 MiniMax M2.5 模型的番剧信息查询智能体，提供 Web 界面和 API 接口。
+
+## 部署到 Vercel
+
+请优先参考文档：[docs/vercel部署说明.md](./docs/vercel部署说明.md)
+Redis 升级参考：[docs/checkpoint从memory升级redis迁移指南.md](./docs/checkpoint从memory升级redis迁移指南.md)
 
 ## 技术栈
 
@@ -51,7 +56,7 @@ CACHE_TTL=3600
 #### 终端1：启动后端 API
 
 ```bash
-conda activate langgraph-env
+conda activate myenv
 cd D:\AI\AIcode\minimaxtest
 uvicorn src.main:app --reload
 ```

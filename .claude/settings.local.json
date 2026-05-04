@@ -3,7 +3,14 @@
     "allow": [
       "Bash(conda run:*)",
       "Bash(conda create:*)",
-      "Bash(conda env list)"
+      "Bash(conda env list)",
+      "Bash(uv lock *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('index.py', encoding='utf-8'\\).read\\(\\)\\); print\\('index.py: OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"from src.llm.client import create_llm, LLMClient, MiniMaxClient; print\\('llm.client imports: OK'\\)\")",
+      "Bash(python -c \"from src.llm import create_llm, LLMClient; print\\('llm module imports: OK'\\)\")",
+      "Bash(python -c \"from src.main import app; print\\('main.py app import: OK'\\)\")"
     ]
   }
 }

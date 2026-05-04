@@ -42,7 +42,7 @@ class BangumiAPI(AnimeDataSource):
     
     def __init__(self):
         self._headers = {
-            "User-Agent": "AnimeAgent/1.0 (minimaxtest)",
+            "User-Agent": "AnimeAgent/1.0",
             "Content-Type": "application/json"
         }
     

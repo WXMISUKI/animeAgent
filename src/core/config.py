@@ -14,9 +14,9 @@ class Settings(BaseSettings):
         extra="ignore"
     )
     
-    # ========== MiniMax LLM 配置 ==========
-    orch_api_base: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    orch_model: str = "MiniMax/MiniMax-M2.5"
+    # ========== LLM 配置（豆包 / Volcengine Ark） ==========
+    orch_api_base: str = "https://ark.cn-beijing.volces.com/api/v3"
+    orch_model: str = ""
     orch_api_key: str = ""
     
     # ========== 数据源配置 ==========

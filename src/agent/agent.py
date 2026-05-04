@@ -13,11 +13,13 @@ import json
 import re
 import logging
 import asyncio
+from datetime import datetime
 from typing import Optional, Dict, Any, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from .tools import create_tools
 from ..utils.logger import chat_logger
+from ..llm.client import create_llm
 
 # 导入意图解析模块（解耦后的新模块）
 from .intent import IntentParser, IntentType, SlotDefinition
@@ -424,7 +426,7 @@ class ResponseGenerator:
 # ==================== 智能体主类 ====================
 
 class AnimeAgent:
-    """番剧智能助手 - 新架构（支持会话记忆）
+    """番剧智能助手 - 新架构（支持会话记忆 + LangGraph Checkpoint）
     
     工作流程：
     1. IntentParser - 意图解析（支持上下文）
@@ -433,33 +435,25 @@ class AnimeAgent:
     4. ResponseGenerator - 响应生成
     
     会话管理：
-    - 支持多轮对话上下文
-    - 会话数据存储在 Redis（如果可用）或内存
-    - 自动管理会话生命周期
+    - 支持多轮对话上下文（SessionManager）
+    - 支持 LangGraph Checkpoint 状态持久化
+    - thread_id 用于标识对话线程，启用 Checkpoint 后自动恢复状态
+    
+    使用 Checkpoint：
+    - 传入 thread_id 时，自动从 checkpoint 恢复状态
+    - 每次节点执行后自动保存状态
+    - 支持断点恢复和多轮对话无缝衔接
     """
     
-    def __init__(self, verbose: bool = True):
+    # 类级别的图实例（支持 Checkpoint）
+    _checkpoint_graph = None
+    
+    def __init__(self, verbose: bool = True, enable_checkpoint: bool = False):
         self.verbose = verbose
-        
-        # 获取配置
-        if CONFIG_AVAILABLE and settings:
-            api_base = settings.orch_api_base
-            api_key = settings.orch_api_key
-            model = settings.orch_model
-        else:
-            api_base = os.getenv("ORCH_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-            api_key = os.getenv("ORCH_API_KEY", "")
-            model = os.getenv("ORCH_MODEL", "MiniMax/MiniMax-M2.5")
-        
-        # 创建LLM
-        self.llm = ChatOpenAI(
-            model=model,
-            temperature=0.7,
-            max_tokens=2000,
-            streaming=True,
-            base_url=api_base,
-            api_key=api_key
-        )
+        self.enable_checkpoint = enable_checkpoint
+
+        # 创建 LLM（豆包）
+        self.llm = create_llm(temperature=0.7, max_tokens=2000, streaming=True)
         
         # 创建组件
         self.intent_parser = IntentParser(self.llm)
@@ -467,7 +461,7 @@ class AnimeAgent:
         self.executor = Executor({tool.name: tool for tool in create_tools()})
         self.response_generator = ResponseGenerator(self.llm)
         
-        # 初始化会话管理器（新增）
+        # 初始化会话管理器
         self._session_manager = None
         if SESSION_MANAGER_AVAILABLE:
             try:
@@ -476,10 +470,71 @@ class AnimeAgent:
             except Exception as e:
                 logger.warning(f"会话管理器初始化失败: {e}")
         
+        # 初始化 Checkpoint 图
+        self._init_checkpoint_graph()
+        
+        # 追踪最近的查询结果（用于指代消解）
+        self._recent_results = []  # 保留最近5次查询结果
+        
         if self.verbose:
             logger.info("🤖 AnimeAgent 初始化完成")
             logger.info(f"可用工具: {list(self.executor.tool_map.keys())}")
             logger.info(f"会话管理: {'已启用' if self._session_manager else '未启用'}")
+            logger.info(f"Checkpoint: {'已启用' if self.enable_checkpoint else '未启用'}")
+    
+    def _init_checkpoint_graph(self):
+        """初始化 Checkpoint 图"""
+        if self.enable_checkpoint and AnimeAgent._checkpoint_graph is None:
+            try:
+                from .graph import create_checkpoint_agent_graph
+                AnimeAgent._checkpoint_graph = create_checkpoint_agent_graph()
+                logger.info("✅ LangGraph Checkpoint 图已初始化")
+            except Exception as e:
+                logger.warning(f"Checkpoint 图初始化失败: {e}")
+                self.enable_checkpoint = False
+    
+    @property
+    def checkpoint_graph(self):
+        """获取 Checkpoint 图"""
+        if not self.enable_checkpoint:
+            return None
+        return AnimeAgent._checkpoint_graph
+    
+    def _format_enhanced_context(self, context_text: str, recent_results: list = None) -> str:
+        """格式化增强的上下文，包含历史对话和查询结果（用于指代消解）
+        
+        Args:
+            context_text: 历史对话文本
+            recent_results: 最近的查询结果列表
+            
+        Returns:
+            格式化后的上下文文本
+        """
+        parts = []
+        
+        # 1. 历史对话
+        if context_text:
+            parts.append("## 历史对话")
+            parts.append(context_text)
+        
+        # 2. 最近的查询结果（用于指代消解）
+        if recent_results:
+            parts.append("\n## 最近的查询结果")
+            for i, result in enumerate(recent_results[-2:], 1):  # 最近2次结果
+                if result.get("anime_results"):
+                    parts.append(f"\n查询 {i}:")
+                    for anime in result["anime_results"][:3]:  # 最多3部
+                        name = anime.get('name', '未知')
+                        rating = anime.get('rating', 'N/A')
+                        parts.append(f"  - {name}: 评分 {rating}")
+        
+        # 3. 指代词说明
+        parts.append("\n## 指代词说明")
+        parts.append("- '这些'、'这些番剧' → 指最近的查询结果中的番剧")
+        parts.append("- '那部'、'那个' → 指历史对话中提到的某一部番剧")
+        parts.append("- '它们的' → 指上下文中的某个集合")
+        
+        return "\n".join(parts)
     
     @property
     def session_manager(self):
@@ -492,9 +547,10 @@ class AnimeAgent:
         chat_history: list = None,
         session_id: str = None,
         user_id: str = "default",
-        trace_id: str = None
+        trace_id: str = None,
+        thread_id: str = None
     ):
-        """运行智能体（增量流式输出）- 支持会话上下文
+        """运行智能体（增量流式输出）- 支持会话上下文 + LangGraph Checkpoint
         
         错误处理策略：
         1. 每个步骤都有独立的 try-except
@@ -504,10 +560,24 @@ class AnimeAgent:
         Args:
             user_input: 用户输入
             chat_history: 聊天历史（兼容旧接口）
-            session_id: 会话 ID（可选）
-            user_id: 用户 ID（可选）
+            session_id: 会话 ID（SessionManager）
+            user_id: 用户 ID
             trace_id: 追踪 ID（用于链路追踪）
+            thread_id: 线程 ID（LangGraph Checkpoint，启用状态持久化）
         """
+        
+        # 如果有 thread_id 且启用了 checkpoint，尝试从 checkpoint 恢复状态
+        checkpoint_state = None
+        if thread_id and self.enable_checkpoint and self.checkpoint_graph:
+            try:
+                from langgraph.checkpoint.memory import InMemorySaver
+                config = {"configurable": {"thread_id": thread_id}}
+                # 尝试获取上一个 checkpoint 状态
+                checkpoint_state = await self.checkpoint_graph.aget_state(config)
+                if checkpoint_state:
+                    logger.info(f"📜 从 Checkpoint 恢复状态: thread_id={thread_id}")
+            except Exception as e:
+                logger.warning(f"从 Checkpoint 恢复状态失败: {e}")
         # 获取或创建会话
         session = None
         context_text = ""
@@ -599,10 +669,14 @@ class AnimeAgent:
             
             return
         
-        # 使用流式 LLM 提取参数（传入上下文）
+        # 使用流式 LLM 提取参数（传入增强的上下文）
         params = {}
         full_params_text = ""
-        async for param_chunk in self.intent_parser._astream_extract_params(user_input, intent, context_text):
+        
+        # 创建增强的上下文（包含历史对话和最近的查询结果）
+        enhanced_context = self._format_enhanced_context(context_text, self._recent_results)
+        
+        async for param_chunk in self.intent_parser._astream_extract_params(user_input, intent, enhanced_context):
             full_params_text += param_chunk
             yield {"type": "intent", "status": "parsing", "params_delta": param_chunk}
         
@@ -731,6 +805,30 @@ class AnimeAgent:
         # 执行完成
         yield {"type": "execution", "status": "done", "results": results}
         
+        # ========== 保存查询结果到 _recent_results（用于指代消解） ==========
+        anime_results = []
+        for result in results:
+            if result.get("success") and result.get("result"):
+                try:
+                    data = json.loads(result["result"])
+                    if isinstance(data, list):
+                        anime_results.extend(data)
+                    elif isinstance(data, dict):
+                        anime_results.append(data)
+                except:
+                    pass
+        
+        if anime_results:
+            self._recent_results.append({
+                "query": user_input,
+                "anime_results": anime_results,
+                "timestamp": datetime.now().timestamp()
+            })
+            # 只保留最近5次结果
+            if len(self._recent_results) > 5:
+                self._recent_results = self._recent_results[-5:]
+            logger.info(f"💾 保存查询结果: {len(anime_results)} 部番剧")
+        
         # ========== 第五步：生成响应（带错误处理） ==========
         # 使用 astream_generate 实现真正的流式输出
         # 每次 LLM 输出一个 chunk 就立即 yield 发送给前端
@@ -806,13 +904,26 @@ class AnimeAgent:
 # ==================== 便捷函数 ====================
 
 _agent = None
+_checkpoint_agent = None
 
-def get_agent(verbose: bool = True) -> AnimeAgent:
-    """获取全局Agent实例"""
-    global _agent
-    if _agent is None:
-        _agent = AnimeAgent(verbose=verbose)
-    return _agent
+
+def get_agent(verbose: bool = True, enable_checkpoint: bool = False) -> AnimeAgent:
+    """获取全局Agent实例
+    
+    Args:
+        verbose: 是否输出详细日志
+        enable_checkpoint: 是否启用 LangGraph Checkpoint（支持多轮对话状态持久化）
+    """
+    global _agent, _checkpoint_agent
+    
+    if enable_checkpoint:
+        if _checkpoint_agent is None:
+            _checkpoint_agent = AnimeAgent(verbose=verbose, enable_checkpoint=True)
+        return _checkpoint_agent
+    else:
+        if _agent is None:
+            _agent = AnimeAgent(verbose=verbose)
+        return _agent
 
 
 def run_agent(
@@ -838,19 +949,33 @@ async def run_agent_streaming(
     chat_history: list = None,
     session_id: str = None,
     user_id: str = "default",
-    trace_id: str = None
+    trace_id: str = None,
+    thread_id: str = None
 ):
     """运行Agent（流式输出）
     
     Args:
         user_input: 用户输入
         chat_history: 聊天历史（兼容旧接口）
-        session_id: 会话 ID（支持多轮对话）
+        session_id: 会话 ID（SessionManager）
         user_id: 用户 ID
         trace_id: 追踪 ID（用于链路追踪）
+        thread_id: 线程 ID（LangGraph Checkpoint，启用状态持久化）
+                   如果传入 thread_id，将自动从 checkpoint 恢复对话状态
     """
-    agent = get_agent()
-    async for chunk in agent.run_streaming(user_input, chat_history, session_id, user_id, trace_id):
+    # 如果提供了 thread_id，使用支持 Checkpoint 的 Agent
+    enable_checkpoint = thread_id is not None
+    agent = get_agent(enable_checkpoint=enable_checkpoint)
+    
+    # 传入 thread_id 到 run_streaming
+    async for chunk in agent.run_streaming(
+        user_input, 
+        chat_history, 
+        session_id, 
+        user_id, 
+        trace_id,
+        thread_id
+    ):
         yield chunk
 
 

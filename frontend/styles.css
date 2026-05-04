@@ -646,13 +646,30 @@ body {
     overflow-wrap: break-word;
 }
 
-/* 无序列表符号 */
+/* 无序列表符号 - 使用 ::before 伪元素确保换行对齐 */
 .content-area ul {
-    list-style-type: disc;
+    list-style: none;
+    padding-left: 0;
+    margin: 8px 0;
 }
 
-.content-area ul li::marker {
+.content-area ul li {
+    position: relative;
+    padding-left: 24px;
+    margin: 6px 0;
+    line-height: 1.6;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+.content-area ul li::before {
+    content: "•";
+    position: absolute;
+    left: 8px;
+    top: 0;
     color: #6366f1;
+    font-size: 14px;
+    line-height: 1.6;
 }
 
 /* 表格样式 */

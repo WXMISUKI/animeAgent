@@ -4,6 +4,7 @@
 import json
 import asyncio
 import logging
+import os
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,25 +56,63 @@ api_logger = logging.getLogger("API")
 # 创建 FastAPI 应用
 app = FastAPI(
     title="番剧信息获取智能体",
-    description="基于 MiniMax M2.5 的番剧查询智能体",
-    version="0.1.0"
+    description="基于豆包大模型的番剧查询智能体",
+    version="0.2.0"
 )
 
-# 添加 CORS 支持
+IS_VERCEL = bool(os.environ.get("VERCEL"))
+
+# ---------- CORS 配置（通过环境变量控制） ----------
+_cors_origins_raw = os.getenv("CORS_ALLOW_ORIGINS", "*")
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有来源
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ---------- API Key 鉴权中间件 ----------
+_api_auth_enabled = os.getenv("API_AUTH_ENABLED", "false").lower() == "true"
+_api_auth_key = os.getenv("API_AUTH_KEY", "")
+_api_auth_header = os.getenv("API_AUTH_HEADER", "x-api-key")
+
+_PROTECTED_PREFIXES = ("/api/", "/chat")
+
+if _api_auth_enabled and _api_auth_key:
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            path = request.url.path
+            if any(path.startswith(p) for p in _PROTECTED_PREFIXES):
+                token = request.headers.get(_api_auth_header, "")
+                if token != _api_auth_key:
+                    return JSONResponse(
+                        status_code=401,
+                        content={"code": 401, "message": "Unauthorized", "error_type": "AUTH_ERROR", "data": None},
+                    )
+            return await call_next(request)
+
+    app.add_middleware(ApiKeyAuthMiddleware)
+    api_logger.info(f"API 鉴权已启用，保护路径: {_PROTECTED_PREFIXES}")
+
 
 class QueryRequest(BaseModel):
-    """查询请求"""
+    """查询请求
+    
+    字段说明：
+    - query: 用户查询内容
+    - user_id: 用户 ID
+    - session_id: 会话 ID（用于 SessionManager）
+    - thread_id: 线程 ID（用于 LangGraph Checkpoint，多轮对话状态持久化）
+    """
     query: str
     user_id: str = "default"
-    session_id: str | None = None  # 会话 ID，支持多轮对话
+    session_id: str | None = None  # 会话 ID（SessionManager）
+    thread_id: str | None = None   # 线程 ID（LangGraph Checkpoint）
 
 
 class QueryResponse(BaseModel):
@@ -86,13 +125,51 @@ class QueryResponse(BaseModel):
 @app.get("/")
 async def root():
     """根路径"""
-    return {"message": "番剧信息获取智能体 API", "version": "0.1.0"}
+    return {
+        "message": "番剧信息获取智能体 API",
+        "version": "0.2.0",
+        "deployment": "vercel" if IS_VERCEL else "local",
+        "checkpoint_backend": "memory"
+    }
 
 
 @app.get("/health")
 async def health():
     """健康检查"""
     return {"status": "ok"}
+
+
+@app.get("/health/detail")
+async def health_detail():
+    """详细健康检查（适合部署后巡检）"""
+    required_envs = ["ORCH_API_BASE", "ORCH_MODEL", "ORCH_API_KEY"]
+    env_status = {
+        key: bool(os.getenv(key)) for key in required_envs
+    }
+    checkpoint_backend = os.getenv("CHECKPOINT_BACKEND", "memory")
+    checkpoint_enabled = os.getenv("ENABLE_CHECKPOINT", "true").lower() == "true"
+
+    return {
+        "status": "ok",
+        "deployment": "vercel" if IS_VERCEL else "local",
+        "runtime": {
+            "python": os.getenv("PYTHON_VERSION", "unknown"),
+            "vercel": IS_VERCEL
+        },
+        "config": {
+            "checkpoint_enabled": checkpoint_enabled,
+            "checkpoint_backend": checkpoint_backend,
+            "cache_ttl": os.getenv("CACHE_TTL", "3600")
+        },
+        "env": {
+            "required": env_status,
+            "all_required_ready": all(env_status.values())
+        },
+        "limitations": [
+            "CHECKPOINT_BACKEND=memory 时会话状态在实例重启后可能丢失",
+            "Serverless 场景下 SSE 可能受平台超时策略影响"
+        ]
+    }
 
 
 @app.get("/metrics")
@@ -164,7 +241,9 @@ async def chat(request: QueryRequest):
 async def chat_stream(request: QueryRequest):
     """流式对话接口（SSE）- 增量流式输出
     
-    支持多轮对话，通过 session_id 保持会话上下文
+    支持多轮对话：
+    - session_id: 使用 SessionManager 管理会话
+    - thread_id: 使用 LangGraph Checkpoint 持久化状态（支持断点恢复）
     
     错误处理策略：
     1. 每个步骤都有独立的 try-except
@@ -174,6 +253,9 @@ async def chat_stream(request: QueryRequest):
     
     # 生成 Trace ID 用于追踪
     trace_id = generate_trace_id()
+    
+    # 使用 thread_id 作为 Checkpoint 标识，如果没有提供则使用 session_id
+    thread_id = request.thread_id or request.session_id
     
     # 创建追踪上下文
     tracer = get_tracer()
@@ -185,8 +267,9 @@ async def chat_stream(request: QueryRequest):
         session_id=request.session_id
     )
     
-    # 记录请求开始（包含 Trace ID）
-    api_logger.info(f"📥 收到请求 | Trace: {trace_id} | 用户: {request.query} | 会话: {request.session_id}")
+    # 记录请求开始（包含 Trace ID 和 Thread ID）
+    checkpoint_info = "Checkpoint" if request.thread_id else "无Checkpoint"
+    api_logger.info(f"📥 收到请求 | Trace: {trace_id} | 用户: {request.query} | 会话: {request.session_id} | {checkpoint_info}")
     
     # 记录用户发送的消息
     chat_logger.log_user_query(request.query)
@@ -195,8 +278,14 @@ async def chat_stream(request: QueryRequest):
         chunk_count = 0
         error_occurred = False
         
-        # 首次返回 session_id 和 trace_id
-        yield f"data: {json.dumps({'type': 'session', 'session_id': request.session_id, 'trace_id': trace_id}, ensure_ascii=False)}\n\n"
+        # 首次返回 session_id、trace_id 和 thread_id
+        session_info = {
+            'type': 'session', 
+            'session_id': request.session_id, 
+            'trace_id': trace_id,
+            'thread_id': thread_id  # 返回 thread_id 给客户端
+        }
+        yield f"data: {json.dumps(session_info, ensure_ascii=False)}\n\n"
         
         try:
             # 步骤0: 准备阶段
@@ -206,7 +295,8 @@ async def chat_stream(request: QueryRequest):
                 user_input=request.query,
                 session_id=request.session_id,
                 user_id=request.user_id,
-                trace_id=trace_id
+                trace_id=trace_id,
+                thread_id=thread_id
             ):
                 chunk_count += 1
                 chunk_type = chunk.get("type", "unknown")
