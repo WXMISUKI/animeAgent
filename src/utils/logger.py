@@ -40,38 +40,47 @@ class ChatLogger:
         """初始化日志系统"""
         if self._initialized:
             return
-        
-        # 配置参数
-        self.log_dir = os.getenv("LOG_DIR", "logs")
+
+        IS_VERCEL = bool(os.environ.get("VERCEL"))
+
+        # Vercel 只有 /tmp 可写
+        default_log_dir = "/tmp/logs" if IS_VERCEL else "logs"
+        self.log_dir = os.getenv("LOG_DIR", default_log_dir)
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
         self.session_id = uuid.uuid4().hex[:8]
         self.session_start = datetime.now()
-        
+
         # 生成会话日志文件名
         self.timestamp = self.session_start.strftime("%Y-%m-%d_%H-%M-%S")
         self.chat_log_file = os.path.join(self.log_dir, f"chat_{self.timestamp}.log")
         self.audit_log_file = os.path.join(self.log_dir, f"audit_{self.timestamp}.log")
-        
+
+        # 文件日志是否可用
+        self._file_logging = False
+
         # 初始化
         self._setup_directories()
         self._cleanup_old_logs()
         self._setup_loguru()
-        
+
         # 写入会话开始标记
         self._log_session_start()
-        
+
         ChatLogger._initialized = True
     
     def _setup_directories(self):
         """确保日志目录存在"""
-        if not os.path.exists(self.log_dir):
+        try:
             os.makedirs(self.log_dir, exist_ok=True)
+            self._file_logging = True
+        except OSError:
+            self._file_logging = False
     
     def _cleanup_old_logs(self):
         """清理旧日志 - 每次启动时删除之前的日志"""
-        if not os.path.exists(self.log_dir):
+        if not self._file_logging:
             return
-        
+
         try:
             for filename in os.listdir(self.log_dir):
                 if filename.startswith(("chat_", "audit_")) and filename.endswith(".log"):
@@ -102,22 +111,23 @@ class ChatLogger:
             format=console_format,
             colorize=True
         )
-        
-        # 文件输出（JSON格式，便于程序解析）
-        file_format = (
-            "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
-            "{level: <8} | "
-            "{name}:{function}:{line} - {message}"
-        )
-        
-        logger.add(
-            self.chat_log_file,
-            level="DEBUG",
-            format=file_format,
-            rotation="100 MB",  # 单个文件最大100MB
-            retention="1 day",  # 保留1天
-            encoding="utf-8"
-        )
+
+        # 文件输出（仅在可写时启用）
+        if self._file_logging:
+            file_format = (
+                "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
+                "{level: <8} | "
+                "{name}:{function}:{line} - {message}"
+            )
+
+            logger.add(
+                self.chat_log_file,
+                level="DEBUG",
+                format=file_format,
+                rotation="100 MB",
+                retention="1 day",
+                encoding="utf-8"
+            )
     
     def _log_session_start(self):
         """写入会话开始标记"""
@@ -136,6 +146,8 @@ class ChatLogger:
     
     def _write_to_file(self, data: Dict[str, Any], event_type: str = "log"):
         """写入JSON格式日志到文件"""
+        if not self._file_logging:
+            return
         try:
             entry = {
                 "timestamp": datetime.now().isoformat(),
@@ -255,9 +267,9 @@ class AuditLogger:
     """审计日志 - 记录关键操作（兼容旧接口）"""
     
     def __init__(self, log_file: str = None):
-        # 使用ChatLogger的会话日志文件
-        chat_logger = ChatLogger()
-        self.log_file = log_file or chat_logger.chat_log_file.replace("chat_", "audit_")
+        chat_log = ChatLogger()
+        self.log_file = log_file or chat_log.chat_log_file.replace("chat_", "audit_")
+        self._file_logging = chat_log._file_logging
     
     def log(
         self,
@@ -278,6 +290,8 @@ class AuditLogger:
         }
         
         try:
+            if not self._file_logging:
+                return
             with open(self.log_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:

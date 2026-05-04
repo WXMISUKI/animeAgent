@@ -12,7 +12,9 @@
       "Bash(python -c \"from src.llm import create_llm, LLMClient; print\\('llm module imports: OK'\\)\")",
       "Bash(python -c \"from src.main import app; print\\('main.py app import: OK'\\)\")",
       "Bash(git remote *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/utils/logger.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"from src.utils.logger import chat_logger, logger; print\\('logger import: OK'\\)\")"
     ]
   }
 }
