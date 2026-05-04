@@ -20,7 +20,8 @@
       "Bash(mkdir frontend *)",
       "Bash(cp public/app.js public/index.html public/styles.css frontend/)",
       "Bash(git add *)",
-      "Bash(netstat -ano)"
+      "Bash(netstat -ano)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }

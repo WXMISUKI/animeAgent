@@ -8,7 +8,8 @@ import os
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse, Response
+from fastapi.responses import StreamingResponse, JSONResponse, Response, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -61,6 +62,10 @@ app = FastAPI(
 )
 
 IS_VERCEL = bool(os.environ.get("VERCEL"))
+
+# 前端目录（Vercel 用 public/，本地用 frontend/）
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_FRONTEND_DIR = os.path.join(_BASE_DIR, "public" if IS_VERCEL else "frontend")
 
 # ---------- CORS 配置（通过环境变量控制） ----------
 _cors_origins_raw = os.getenv("CORS_ALLOW_ORIGINS", "*")
@@ -124,7 +129,11 @@ class QueryResponse(BaseModel):
 
 @app.get("/")
 async def root():
-    """根路径"""
+    """根路径 - Vercel 返回前端页面，本地返回 API 信息"""
+    if IS_VERCEL:
+        index_path = os.path.join(_FRONTEND_DIR, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path, media_type="text/html")
     return {
         "message": "番剧信息获取智能体 API",
         "version": "0.2.0",
@@ -454,6 +463,11 @@ async def global_exception_handler(request: Request, exc: Exception):
             "data": None
         }
     )
+
+
+# 挂载前端静态文件（放在所有路由之后，作为兜底）
+if os.path.isdir(_FRONTEND_DIR):
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="static")
 
 
 if __name__ == "__main__":
